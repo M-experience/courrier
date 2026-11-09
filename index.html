@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Courrier</title>
+<style>
+  :root {
+    --fond: #f6f5f2; --panneau: #ffffff; --ligne: #e3e0d9; --texte: #23221f; --doux: #6f6b63;
+    --accent: #2f6fb3; --survol: #eef2f8; --sel: #e2ebf6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; color: var(--texte); background: var(--fond); height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--ligne); background: var(--panneau); }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  header .esp { flex: 1; }
+  header input[type=search] { width: 320px; padding: 6px 10px; border: 1px solid var(--ligne); border-radius: 8px; font: inherit; }
+  button { font: inherit; border: 1px solid var(--ligne); background: var(--panneau); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+  button:hover { background: var(--survol); }
+  button.principal { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { flex: 1; display: grid; grid-template-columns: 240px 400px 1fr; min-height: 0; }
+  nav, #liste, #lecture { overflow: auto; min-height: 0; }
+  nav { border-right: 1px solid var(--ligne); padding: 10px 0; background: #fbfaf8; }
+  nav h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--doux); margin: 14px 16px 4px; }
+  .entree { display: flex; align-items: center; gap: 8px; padding: 5px 16px; cursor: pointer; border-left: 3px solid transparent; }
+  .entree:hover { background: var(--survol); }
+  .entree.actif { background: var(--sel); border-left-color: var(--accent); font-weight: 600; }
+  .entree.cible { background: #dff0e2; outline: 2px dashed #3f8f4f; outline-offset: -2px; }
+  .pastille { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .entree .nb { margin-left: auto; font-size: 12px; color: var(--doux); }
+  #liste { border-right: 1px solid var(--ligne); background: var(--panneau); }
+  .msg { padding: 9px 14px; border-bottom: 1px solid var(--ligne); cursor: pointer; }
+  .msg:hover { background: var(--survol); }
+  .msg.sel { background: var(--sel); }
+  .msg.nonlu .de, .msg.nonlu .obj { font-weight: 700; }
+  .msg .l1 { display: flex; gap: 8px; align-items: baseline; }
+  .msg .de { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg .date { font-size: 12px; color: var(--doux); flex: none; }
+  .msg .obj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg .ext { font-size: 12.5px; color: var(--doux); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .etiq { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 6px; color: #fff; margin-right: 4px; vertical-align: 1px; }
+  #lecture { padding: 18px 22px; background: var(--panneau); display: flex; flex-direction: column; }
+  #lecture h2 { margin: 0 0 6px; font-size: 18px; }
+  .meta { color: var(--doux); font-size: 13px; margin-bottom: 10px; }
+  .barre { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0 12px; }
+  select { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--ligne); }
+  iframe { flex: 1; width: 100%; border: 1px solid var(--ligne); border-radius: 8px; min-height: 400px; background: #fff; }
+  pre.texte { white-space: pre-wrap; font: inherit; }
+  .pj { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .pj span { border: 1px solid var(--ligne); border-radius: 8px; padding: 3px 8px; font-size: 12.5px; }
+  .vide { color: var(--doux); padding: 30px; text-align: center; }
+  #accueil { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #23221f; color: #fff; padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.vu { opacity: .92; }
+  .plus { text-align: center; padding: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Courrier</h1>
+  <input type="search" id="recherche" placeholder="Rechercher (syntaxe Gmail)" hidden>
+  <span class="esp"></span>
+  <span id="qui" class="meta" style="margin:0"></span>
+  <button id="ajout" hidden title="Connecter un autre compte Gmail">+ Compte</button>
+  <button id="sortie" hidden>Déconnexion</button>
+</header>
+
+<div id="accueil">
+  <p>Connectez votre compte Gmail pour commencer.</p>
+  <button class="principal" id="connexion">Se connecter avec Google</button>
+</div>
+
+<main id="app" hidden>
+  <nav id="nav"></nav>
+  <section id="liste"></section>
+  <section id="lecture"><div class="vide">Sélectionnez un message.</div></section>
+</main>
+<div id="toast"></div>
+
+<script>
+const API = "https://gcghlwjuekhbueljpldk.supabase.co/functions/v1";
+const RETOUR = location.origin + location.pathname;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Couleur de la « casquette » selon l'adresse de réception
+const IDENTITES = [
+  [/ecole-edm\.fr|ecole\.transitions|design-mutation/i, "EDM", "#2f6fb3"],
+  [/manuel\.zacklad\.cnam@gmail/i, "Recrutement", "#3f8f4f"],
+  [/lecnam\.net|cnam\.fr/i, "CNAM", "#b3442f"],
+  [/zacklad\.org|manuel\.experience|zacklad@gmail|pluriverse/i, "Perso", "#7a5bb3"],
+];
+function identite(dest) {
+  for (const [re, nom, coul] of IDENTITES) if (re.test(dest || "")) return { nom, coul };
+  return null;
+}
+
+let etat = { session: null, moi: null, vue: null, messages: [], pageToken: null, sel: null };
+
+function toast(t) { const e = $("#toast"); e.textContent = t; e.classList.add("vu"); setTimeout(() => e.classList.remove("vu"), 2200); }
+
+async function api(action, corps = {}) {
+  const r = await fetch(`${API}/api`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-session": etat.session },
+    body: JSON.stringify({ action, ...corps }),
+  });
+  const d = await r.json();
+  if (r.status === 401) { deconnecter(false); throw new Error("Session expirée"); }
+  if (d.erreur) throw new Error(d.erreur);
+  return d;
+}
+
+function connecter(extra = "") {
+  location.href = `${API}/oauth-start?retour=${encodeURIComponent(RETOUR)}${extra}`;
+}
+
+function deconnecter(serveur = true) {
+  if (serveur && etat.session) api("deconnexion").catch(() => {});
+  try { localStorage.removeItem("courrier.session"); } catch {}
+  etat.session = null;
+  $("#app").hidden = true; $("#accueil").hidden = false;
+  $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = true;
+  $("#qui").textContent = "";
+}
+
+async function demarrer() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("session")) {
+    try { localStorage.setItem("courrier.session", h.get("session")); } catch {}
+    history.replaceState(null, "", location.pathname);
+  }
+  try { etat.session = h.get("session") || localStorage.getItem("courrier.session"); } catch { etat.session = h.get("session"); }
+  if (!etat.session) return;
+  try {
+    etat.moi = await api("moi");
+  } catch (e) { return; }
+  $("#accueil").hidden = true; $("#app").hidden = false;
+  $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = false;
+  $("#qui").textContent = etat.moi.comptes.map((c) => c.email).join(" · ");
+  dessinerNav();
+  const principal = etat.moi.comptes.find((c) => c.role === "principal") || etat.moi.comptes[0];
+  ouvrirBoite(principal.email);
+}
+
+function dessinerNav() {
+  const { comptes, processus, compteurs } = etat.moi;
+  let h = `<h2>Boîtes</h2>`;
+  for (const c of comptes) {
+    const id = identite(c.email);
+    h += `<div class="entree" data-boite="${esc(c.email)}"><span class="pastille" style="background:${id?.coul ?? "#999"}"></span>${esc(c.role === "recrutement" ? "Recrutement" : "Réception")}<span class="nb">${esc(c.email.split("@")[0])}</span></div>`;
+  }
+  const parCasquette = {};
+  for (const p of processus) (parCasquette[p.casquette] ??= []).push(p);
+  for (const [cas, liste] of Object.entries(parCasquette)) {
+    h += `<h2>${esc(cas)}</h2>`;
+    for (const p of liste) {
+      const n = compteurs[p.id];
+      h += `<div class="entree" data-processus="${p.id}"><span class="pastille" style="background:${esc(p.couleur || "#999")}"></span>${esc(p.nom)}<span class="nb">${n ?? ""}</span></div>`;
+    }
+  }
+  $("#nav").innerHTML = h;
+  for (const e of document.querySelectorAll("[data-boite]")) e.onclick = () => ouvrirBoite(e.dataset.boite);
+  for (const e of document.querySelectorAll("[data-processus]")) {
+    e.onclick = () => ouvrirProcessus(e.dataset.processus);
+    e.ondragover = (ev) => { ev.preventDefault(); e.classList.add("cible"); };
+    e.ondragleave = () => e.classList.remove("cible");
+    e.ondrop = async (ev) => {
+      ev.preventDefault(); e.classList.remove("cible");
+      const m = JSON.parse(ev.dataTransfer.getData("text/plain"));
+      await classer(m, e.dataset.processus);
+    };
+  }
+  marquerNav();
+}
+
+function marquerNav() {
+  for (const e of document.querySelectorAll(".entree")) {
+    e.classList.toggle("actif", (etat.vue?.boite && e.dataset.boite === etat.vue.boite) || (etat.vue?.processus && e.dataset.processus === etat.vue.processus));
+  }
+}
+
+async function ouvrirBoite(email, q) {
+  etat.vue = { boite: email, q: q || "in:inbox" };
+  marquerNav();
+  $("#liste").innerHTML = `<div class="vide">Chargement…</div>`;
+  try {
+    const d = await api("liste", { compte: email, q: etat.vue.q });
+    etat.messages = d.messages.map((m) => ({ ...m, compte: email }));
+    etat.pageToken = d.pageToken;
+    dessinerListe();
+  } catch (e) { $("#liste").innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+async function plus() {
+  const d = await api("liste", { compte: etat.vue.boite, q: etat.vue.q, pageToken: etat.pageToken });
+  etat.messages.push(...d.messages.map((m) => ({ ...m, compte: etat.vue.boite })));
+  etat.pageToken = d.pageToken;
+  dessinerListe();
+}
+
+async function ouvrirProcessus(id) {
+  etat.vue = { processus: id };
+  marquerNav();
+  $("#liste").innerHTML = `<div class="vide">Chargement…</div>`;
+  const d = await api("processus_messages", { processus_id: id });
+  etat.messages = d.messages.map((m) => ({ ...m, compte: m.compte_email }));
+  etat.pageToken = null;
+  dessinerListe();
+}
+
+function nomProc(id) { return etat.moi.processus.find((p) => p.id === id); }
+
+function dateCourte(iso) {
+  const d = new Date(iso), auj = new Date();
+  return d.toDateString() === auj.toDateString()
+    ? d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+function nomExp(de) { return (de || "").replace(/<.*>/, "").replace(/"/g, "").trim() || de; }
+
+function dessinerListe() {
+  if (!etat.messages.length) { $("#liste").innerHTML = `<div class="vide">Aucun message.</div>`; return; }
+  $("#liste").innerHTML = etat.messages.map((m, i) => {
+    const id = identite(m.destinataires);
+    const p = m.processus_id && nomProc(m.processus_id);
+    return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.id ? "sel" : ""}" draggable="true" data-i="${i}">
+      <div class="l1"><span class="de">${esc(nomExp(m.expediteur))}</span><span class="date">${dateCourte(m.date)}</span></div>
+      <div class="obj">${id ? `<span class="etiq" style="background:${id.coul}">${id.nom}</span>` : ""}${p ? `<span class="etiq" style="background:${esc(p.couleur)}">${esc(p.nom)}</span>` : ""}${esc(m.objet || "(sans objet)")}</div>
+      <div class="ext">${esc(m.extrait)}</div></div>`;
+  }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de messages</button></div>` : "");
+  for (const e of document.querySelectorAll(".msg")) {
+    const m = etat.messages[e.dataset.i];
+    e.onclick = () => lire(m);
+    e.ondragstart = (ev) => ev.dataTransfer.setData("text/plain", JSON.stringify({ id: m.id, compte: m.compte }));
+  }
+  if ($("#btnplus")) $("#btnplus").onclick = plus;
+}
+
+async function lire(m) {
+  etat.sel = m.id;
+  dessinerListe();
+  const zone = $("#lecture");
+  zone.innerHTML = `<div class="vide">Chargement…</div>`;
+  try {
+    const d = await api("message", { compte: m.compte, id: m.id });
+    const opts = `<option value="">Classer dans…</option>` + etat.moi.processus.map((p) =>
+      `<option value="${p.id}" ${p.id === m.processus_id ? "selected" : ""}>${esc(p.casquette)} / ${esc(p.nom)}</option>`).join("");
+    zone.innerHTML = `
+      <h2>${esc(d.objet || "(sans objet)")}</h2>
+      <div class="meta">De ${esc(d.expediteur)}<br>À ${esc(d.destinataires)}${d.cc ? `<br>Cc ${esc(d.cc)}` : ""}<br>${new Date(d.date).toLocaleString("fr-FR")}</div>
+      <div class="barre"><select id="classer">${opts}</select>
+        <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a></div>
+      ${d.pieces_jointes.length ? `<div class="pj">${d.pieces_jointes.map((p) => `<span>📎 ${esc(p.nom)}</span>`).join("")}</div>` : ""}
+      <iframe sandbox="allow-popups allow-popups-to-escape-sandbox" id="corps"></iframe>`;
+    const html = d.html || `<pre style="white-space:pre-wrap;font:14px/1.5 sans-serif">${esc(d.texte)}</pre>`;
+    $("#corps").srcdoc = `<base target="_blank"><style>body{font:14px/1.5 sans-serif;margin:12px;word-wrap:break-word}img{max-width:100%;height:auto}</style>${html}`;
+    $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    if (m.non_lu) { api("marquer_lu", { compte: m.compte, id: m.id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
+  } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+async function classer(m, processus_id) {
+  await api("classer", { compte: m.compte, id: m.id, processus_id });
+  const loc = etat.messages.find((x) => x.id === m.id);
+  if (loc) loc.processus_id = processus_id;
+  etat.moi = await api("moi");
+  dessinerNav(); dessinerListe();
+  toast(`Classé dans ${nomProc(processus_id)?.nom}`);
+}
+
+$("#connexion").onclick = () => connecter();
+$("#ajout").onclick = () => connecter(`&session=${encodeURIComponent(etat.session)}&compte=manuel.zacklad.cnam@gmail.com`);
+$("#sortie").onclick = () => deconnecter();
+$("#recherche").onkeydown = (ev) => {
+  if (ev.key === "Enter" && etat.vue?.boite) ouvrirBoite(etat.vue.boite, ev.target.value || "in:inbox");
+};
+demarrer();
+</script>
+</body>
+</html>
