@@ -87,7 +87,11 @@
   nav h2.classeur .nbc { margin-left: auto; margin-right: 10px; }
   .alerte { background: #c0392b; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; }
   /* Tableau de suivi (Kanban) */
-  main.kanban { grid-template-columns: 240px 1fr 460px; }
+  main.kanban { grid-template-columns: 240px 1fr; }
+  main.kanban #lecture { display: none; }
+  main.kanban.ouvert { grid-template-columns: 240px 1fr 520px; }
+  main.kanban.ouvert #lecture { display: flex; border-left: 1px solid var(--ligne); }
+  .fermer-l { align-self: flex-end; margin-bottom: 6px; font-size: 12.5px; padding: 3px 9px; }
   .tableau { display: flex; flex-direction: column; height: 100%; }
   .tableau .entete-t { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--ligne); }
   .tableau .entete-t h3 { margin: 0; font-size: 15px; flex: 1; }
@@ -333,7 +337,7 @@ function requete() {
 
 async function ouvrirDossier(email, dossier, recherche) {
   etat.vue = { boite: email, dossier, onglet: memo("courrier.onglet") || "primary", recherche };
-  $("#app").classList.remove("kanban");
+  $("#app").classList.remove("kanban", "ouvert");
   etat.sel = null;
   viderLecture();
   marquerNav();
@@ -368,7 +372,7 @@ function viderLecture(texte = "Sélectionnez une conversation.") {
 
 async function ouvrirProcessus(id) {
   etat.vue = { processus: id };
-  $("#app").classList.remove("kanban");
+  $("#app").classList.remove("kanban", "ouvert");
   etat.sel = null;
   viderLecture("Chargement…");
   marquerNav();
@@ -530,6 +534,7 @@ async function ouvrirSuivi(flux, processusId) {
   etat.vue = { suivi: flux, processus: processusId, filtre: "" };
   etat.sel = null;
   $("#app").classList.add("kanban");
+  $("#app").classList.remove("ouvert");
   marquerNav();
   viderLecture("Cliquez sur une carte pour ouvrir la conversation.");
   $("#liste").innerHTML = `<div class="vide">Chargement du tableau…</div>`;
@@ -539,6 +544,12 @@ async function ouvrirSuivi(flux, processusId) {
     dessinerTableau();
   } catch (e) { $("#liste").innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
 }
+
+function fermerLectureKanban() {
+  $("#app").classList.remove("ouvert"); etat.sel = null;
+  for (const o of document.querySelectorAll(".fiche.sel")) o.classList.remove("sel");
+}
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#classeur") && $("#app").classList.contains("ouvert")) fermerLectureKanban(); });
 
 function age(dateIso) {
   const j = Math.floor((Date.now() - new Date(dateIso).getTime()) / 86400000);
@@ -575,7 +586,11 @@ function dessinerTableau() {
       const x = etat.fils.find((y) => y.thread_id === c.dataset.fil);
       etat.sel = x.thread_id;
       for (const o of document.querySelectorAll(".fiche")) o.classList.toggle("sel", o === c);
-      lireFil({ compte: x.compte, thread_id: x.thread_id, id: x.dernier_message_id, processus_id: v.processus });
+      $("#app").classList.add("ouvert");
+      Promise.resolve(lireFil({ compte: x.compte, thread_id: x.thread_id, id: x.dernier_message_id, processus_id: v.processus })).then(() => {
+        if (!$("#lecture .fermer-l")) $("#lecture").insertAdjacentHTML("afterbegin", `<button class="fermer-l" title="Fermer (Échap)">✕ Fermer</button>`);
+        $("#lecture .fermer-l").onclick = fermerLectureKanban;
+      });
     };
     c.ondragstart = (ev) => ev.dataTransfer.setData("text/fil", c.dataset.fil);
   }
