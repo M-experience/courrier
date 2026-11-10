@@ -1,8 +1,18 @@
-import { CLIENT_ID, db, ORIGINES, REDIRECT_URI, SCOPES } from "../_shared/commun.ts";
+import { CLIENT_ID, CLIENT_SECRET, db, ORIGINES, REDIRECT_URI, SCOPES } from "../_shared/commun.ts";
 
 // GET /oauth-start?retour=<origine>&session=<jeton existant, pour ajouter un compte>&compte=<email suggéré>
 Deno.serve(async (req) => {
   const u = new URL(req.url);
+  if (u.searchParams.has("diag")) {
+    // Diagnostic sans divulguer les secrets : forme des identifiants seulement.
+    return new Response(JSON.stringify({
+      client_id_fin: CLIENT_ID.slice(-30),
+      secret_present: CLIENT_SECRET.length > 0,
+      secret_longueur: CLIENT_SECRET.length,
+      secret_prefixe_ok: CLIENT_SECRET.startsWith("GOCSPX-"),
+      redirect_uri: REDIRECT_URI,
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+  }
   const retour = u.searchParams.get("retour") ?? ORIGINES[0];
   const session = u.searchParams.get("session");
   const compte = u.searchParams.get("compte") ?? "";

@@ -5,8 +5,8 @@ export const db = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
-export const CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID")!;
-export const CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET")!;
+export const CLIENT_ID = (Deno.env.get("GOOGLE_CLIENT_ID") ?? "").trim();
+export const CLIENT_SECRET = (Deno.env.get("GOOGLE_CLIENT_SECRET") ?? "").trim();
 export const REDIRECT_URI =
   `${Deno.env.get("SUPABASE_URL")}/functions/v1/oauth-callback`;
 

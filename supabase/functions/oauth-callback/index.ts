@@ -1,10 +1,10 @@
-import { CLIENT_ID, CLIENT_SECRET, COMPTES_AUTORISES, db, REDIRECT_URI } from "../_shared/commun.ts";
+import { CLIENT_ID, CLIENT_SECRET, COMPTES_AUTORISES, db, ORIGINES, REDIRECT_URI } from "../_shared/commun.ts";
 
-function page(msg: string, status = 400) {
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Courrier</title><p style="font-family:sans-serif;padding:2em">${msg}</p>`,
-    { status, headers: { "Content-Type": "text/html; charset=utf-8" } },
-  );
+let RETOUR = ORIGINES[0];
+
+// Les fonctions Supabase ne servent pas de HTML : on renvoie l'erreur à l'application.
+function page(msg: string, _status = 400) {
+  return Response.redirect(`${RETOUR}#erreur=${encodeURIComponent(msg)}`, 302);
 }
 
 Deno.serve(async (req) => {
@@ -18,6 +18,7 @@ Deno.serve(async (req) => {
   if (!e) return page("État OAuth inconnu ou expiré. Recommencez la connexion.");
   await db.from("oauth_etats").delete().eq("etat", etat);
   const { session, retour } = JSON.parse(e.session_token ?? "{}");
+  if (retour) RETOUR = retour;
 
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -31,7 +32,7 @@ Deno.serve(async (req) => {
     }),
   });
   const t = await r.json();
-  if (!r.ok) return page(`Échange du code refusé : ${t.error ?? r.status}`);
+  if (!r.ok) return page(`Échange du code refusé par Google : ${t.error ?? r.status} ${t.error_description ?? ""}`);
 
   const ui = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
     headers: { Authorization: `Bearer ${t.access_token}` },

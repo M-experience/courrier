@@ -126,6 +126,10 @@ function deconnecter(serveur = true) {
 
 async function demarrer() {
   const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("erreur")) {
+    history.replaceState(null, "", location.pathname);
+    $("#accueil").insertAdjacentHTML("afterbegin", `<p style="color:#b3442f;max-width:560px;text-align:center">${esc(h.get("erreur"))}</p>`);
+  }
   if (h.get("session")) {
     try { localStorage.setItem("courrier.session", h.get("session")); } catch {}
     history.replaceState(null, "", location.pathname);
