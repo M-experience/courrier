@@ -61,6 +61,21 @@
   .filtres button { padding: 3px 9px; font-size: 12.5px; border-radius: 14px; }
   .filtres button.actif { background: var(--accent); color: #fff; border-color: var(--accent); }
   .imp { color: #e3a008; font-size: 13px; margin-right: 2px; }
+  .onglets { position: sticky; top: 0; z-index: 1; background: var(--panneau); display: flex; border-bottom: 1px solid var(--ligne); overflow-x: auto; }
+  .onglets button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 10px 12px; background: none; white-space: nowrap; font-size: 13px; color: var(--doux); }
+  .onglets button.actif { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .badge { display: inline-block; font-size: 10.5px; color: #fff; border-radius: 8px; padding: 0 5px; margin-left: 4px; font-weight: 600; }
+  .etoile { cursor: pointer; color: #b8b3a8; font-size: 15px; margin-right: 4px; }
+  .etoile.oui { color: #e3a008; }
+  .nbfil { color: var(--doux); font-size: 12px; margin-left: 4px; }
+  .carte { border: 1px solid var(--ligne); border-radius: 8px; margin-bottom: 10px; }
+  .carte .tete { padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; }
+  .carte .tete b { flex: none; }
+  .carte .tete .ex { flex: 1; color: var(--doux); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .carte .tete .dt { color: var(--doux); font-size: 12px; flex: none; }
+  .carte .corps { padding: 0 12px 12px; }
+  .carte iframe { min-height: 120px; flex: none; }
+  #lecture { display: block; }
 </style>
 </head>
 <body>
@@ -82,7 +97,7 @@
 <main id="app" hidden>
   <nav id="nav"></nav>
   <section id="liste"></section>
-  <section id="lecture"><div class="vide">Sélectionnez un message.</div></section>
+  <section id="lecture"><div class="vide">Sélectionnez une conversation.</div></section>
 </main>
 <div id="toast"></div>
 
@@ -92,6 +107,7 @@ const RETOUR = location.origin + location.pathname;
 const $ = (s) => document.querySelector(s);
 const dec = (s) => { const t = document.createElement("textarea"); t.innerHTML = s ?? ""; return t.value; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const memo = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { return null; } };
 
 // Couleur de la « casquette » selon l'adresse de réception
 const IDENTITES = [
@@ -105,20 +121,26 @@ function identite(dest) {
   return null;
 }
 
-const FILTRES = [
-  ["Tous", "in:inbox"],
-  ["Importants", "in:inbox is:important"],
-  ["Principale", "in:inbox category:primary"],
-  ["Non lus", "in:inbox is:unread"],
-  ["Suivis", "is:starred"],
-  ["Forums", "in:inbox category:forums"],
-  ["Notifications", "in:inbox category:updates"],
-  ["Promotions", "in:inbox category:promotions"],
-  ["Réseaux sociaux", "in:inbox category:social"],
+// Dossiers Gmail affichés pour chaque compte
+const DOSSIERS = [
+  ["Boîte de réception", "INBOX"],
+  ["Messages suivis", "is:starred"],
+  ["En attente", "in:snoozed"],
+  ["Important", "is:important"],
+  ["Messages envoyés", "in:sent"],
+  ["Brouillons", "in:draft"],
+  ["Tous les messages", "in:anywhere -in:spam -in:trash"],
 ];
-function filtreMemo() { try { return localStorage.getItem("courrier.filtre") || "in:inbox"; } catch { return "in:inbox"; } }
+// Onglets de la boîte de réception, comme dans Gmail
+const ONGLETS = [
+  ["Principale", "primary", "#1d55d6"],
+  ["Promotions", "promotions", "#2f8f4f"],
+  ["Réseaux sociaux", "social", "#2f6fb3"],
+  ["Notifications", "updates", "#e8710a"],
+  ["Forums", "forums", "#7a5bb3"],
+];
 
-let etat = { session: null, moi: null, vue: null, messages: [], pageToken: null, sel: null };
+let etat = { session: null, moi: null, vue: null, messages: [], pageToken: null, sel: null, compteurs: {} };
 
 function toast(t) { const e = $("#toast"); e.textContent = t; e.classList.add("vu"); setTimeout(() => e.classList.remove("vu"), 2200); }
 
@@ -154,28 +176,31 @@ async function demarrer() {
     $("#accueil").insertAdjacentHTML("afterbegin", `<p style="color:#b3442f;max-width:560px;text-align:center">${esc(h.get("erreur"))}</p>`);
   }
   if (h.get("session")) {
-    try { localStorage.setItem("courrier.session", h.get("session")); } catch {}
+    memo("courrier.session", h.get("session"));
     history.replaceState(null, "", location.pathname);
   }
-  try { etat.session = h.get("session") || localStorage.getItem("courrier.session"); } catch { etat.session = h.get("session"); }
+  etat.session = h.get("session") || memo("courrier.session");
   if (!etat.session) return;
-  try {
-    etat.moi = await api("moi");
-  } catch (e) { return; }
+  try { etat.moi = await api("moi"); } catch { return; }
   $("#accueil").hidden = true; $("#app").hidden = false;
   $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = false;
   $("#qui").textContent = etat.moi.comptes.map((c) => c.email).join(" · ");
   dessinerNav();
   const principal = etat.moi.comptes.find((c) => c.role === "principal") || etat.moi.comptes[0];
-  ouvrirBoite(principal.email);
+  ouvrirDossier(principal.email, "INBOX");
 }
 
+// ---------- Navigation ----------
 function dessinerNav() {
   const { comptes, processus, compteurs } = etat.moi;
-  let h = `<h2>Boîtes</h2>`;
+  let h = "";
   for (const c of comptes) {
     const id = identite(c.email);
-    h += `<div class="entree" data-boite="${esc(c.email)}"><span class="pastille" style="background:${id?.coul ?? "#999"}"></span>${esc(c.role === "recrutement" ? "Recrutement" : "Réception")}<span class="nb">${esc(c.email.split("@")[0])}</span></div>`;
+    h += `<h2>${esc(c.role === "recrutement" ? "Recrutement · " : "")}${esc(c.email)}</h2>`;
+    const liste = c.role === "recrutement" ? DOSSIERS.filter(([, q]) => ["INBOX", "in:sent", "is:starred"].includes(q)) : DOSSIERS;
+    for (const [nom, q] of liste) {
+      h += `<div class="entree" data-boite="${esc(c.email)}" data-q="${esc(q)}"><span class="pastille" style="background:${q === "INBOX" ? (id?.coul ?? "#999") : "transparent"}"></span>${esc(nom)}</div>`;
+    }
   }
   const parCasquette = {};
   for (const p of processus) (parCasquette[p.casquette] ??= []).push(p);
@@ -187,15 +212,14 @@ function dessinerNav() {
     }
   }
   $("#nav").innerHTML = h;
-  for (const e of document.querySelectorAll("[data-boite]")) e.onclick = () => ouvrirBoite(e.dataset.boite);
+  for (const e of document.querySelectorAll("[data-boite]")) e.onclick = () => ouvrirDossier(e.dataset.boite, e.dataset.q);
   for (const e of document.querySelectorAll("[data-processus]")) {
     e.onclick = () => ouvrirProcessus(e.dataset.processus);
     e.ondragover = (ev) => { ev.preventDefault(); e.classList.add("cible"); };
     e.ondragleave = () => e.classList.remove("cible");
     e.ondrop = async (ev) => {
       ev.preventDefault(); e.classList.remove("cible");
-      const m = JSON.parse(ev.dataTransfer.getData("text/plain"));
-      await classer(m, e.dataset.processus);
+      await classer(JSON.parse(ev.dataTransfer.getData("text/plain")), e.dataset.processus);
     };
   }
   marquerNav();
@@ -203,25 +227,43 @@ function dessinerNav() {
 
 function marquerNav() {
   for (const e of document.querySelectorAll(".entree")) {
-    e.classList.toggle("actif", (etat.vue?.boite && e.dataset.boite === etat.vue.boite) || (etat.vue?.processus && e.dataset.processus === etat.vue.processus));
+    const actif = (etat.vue?.boite && e.dataset.boite === etat.vue.boite && e.dataset.q === etat.vue.dossier) ||
+      (etat.vue?.processus && e.dataset.processus === etat.vue.processus);
+    e.classList.toggle("actif", !!actif);
   }
 }
 
-async function ouvrirBoite(email, q) {
-  etat.vue = { boite: email, q: q || filtreMemo() };
+// ---------- Listes ----------
+function requete() {
+  const v = etat.vue;
+  if (v.recherche) return v.recherche;
+  if (v.dossier === "INBOX") return `in:inbox category:${v.onglet}`;
+  return v.dossier;
+}
+
+async function ouvrirDossier(email, dossier, recherche) {
+  etat.vue = { boite: email, dossier, onglet: memo("courrier.onglet") || "primary", recherche };
+  etat.sel = null;
   marquerNav();
-  $("#liste").innerHTML = barreFiltres() + `<div class="vide">Chargement…</div>`;
-  brancherFiltres();
+  await chargerListe();
+  if (dossier === "INBOX" && !recherche) {
+    api("compteurs_onglets", { compte: email }).then((c) => { etat.compteurs = c; dessinerListe(); }).catch(() => {});
+  }
+}
+
+async function chargerListe() {
+  $("#liste").innerHTML = barre() + `<div class="vide">Chargement…</div>`;
+  brancherBarre();
   try {
-    const d = await api("liste", { compte: email, q: etat.vue.q });
-    etat.messages = d.messages.map((m) => ({ ...m, compte: email }));
+    const d = await api("fils", { compte: etat.vue.boite, q: requete() });
+    etat.messages = d.messages.map((m) => ({ ...m, compte: etat.vue.boite }));
     etat.pageToken = d.pageToken;
     dessinerListe();
-  } catch (e) { $("#liste").innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+  } catch (e) { $("#liste").innerHTML = barre() + `<div class="vide">${esc(e.message)}</div>`; brancherBarre(); }
 }
 
 async function plus() {
-  const d = await api("liste", { compte: etat.vue.boite, q: etat.vue.q, pageToken: etat.pageToken });
+  const d = await api("fils", { compte: etat.vue.boite, q: requete(), pageToken: etat.pageToken });
   etat.messages.push(...d.messages.map((m) => ({ ...m, compte: etat.vue.boite })));
   etat.pageToken = d.pageToken;
   dessinerListe();
@@ -232,9 +274,27 @@ async function ouvrirProcessus(id) {
   marquerNav();
   $("#liste").innerHTML = `<div class="vide">Chargement…</div>`;
   const d = await api("processus_messages", { processus_id: id });
-  etat.messages = d.messages.map((m) => ({ ...m, compte: m.compte_email }));
+  etat.messages = d.messages.map((m) => ({ ...m, compte: m.compte_email, participants: [nomExp(m.expediteur)], nb: 1 }));
   etat.pageToken = null;
   dessinerListe();
+}
+
+function barre() {
+  const v = etat.vue;
+  if (!v?.boite || v.dossier !== "INBOX" || v.recherche) return "";
+  return `<div class="onglets">${ONGLETS.map(([nom, cat, coul]) => {
+    const n = etat.compteurs[cat];
+    const badge = n && cat !== "primary" ? `<span class="badge" style="background:${coul}">${n >= 100 ? "99+" : n} nouveaux</span>` : "";
+    return `<button data-onglet="${cat}" class="${v.onglet === cat ? "actif" : ""}">${esc(nom)}${badge}</button>`;
+  }).join("")}</div>`;
+}
+
+function brancherBarre() {
+  for (const b of document.querySelectorAll(".onglets button")) b.onclick = () => {
+    memo("courrier.onglet", b.dataset.onglet);
+    etat.vue.onglet = b.dataset.onglet;
+    chargerListe();
+  };
 }
 
 function nomProc(id) { return etat.moi.processus.find((p) => p.id === id); }
@@ -248,66 +308,74 @@ function dateCourte(iso) {
 
 function nomExp(de) { return (de || "").replace(/<.*>/, "").replace(/"/g, "").trim() || de; }
 
-function barreFiltres() {
-  if (!etat.vue?.boite) return "";
-  return `<div class="filtres">${FILTRES.map(([nom, q]) =>
-    `<button data-q="${esc(q)}" class="${etat.vue.q === q ? "actif" : ""}">${esc(nom)}</button>`).join("")}</div>`;
-}
-
-function brancherFiltres() {
-  for (const b of document.querySelectorAll(".filtres button")) b.onclick = () => {
-    try { localStorage.setItem("courrier.filtre", b.dataset.q); } catch {}
-    $("#recherche").value = "";
-    ouvrirBoite(etat.vue.boite, b.dataset.q);
-  };
-}
-
 function dessinerListe() {
-  if (!etat.messages.length) { $("#liste").innerHTML = barreFiltres() + `<div class="vide">Aucun message.</div>`; brancherFiltres(); return; }
-  $("#liste").innerHTML = barreFiltres() + etat.messages.map((m, i) => {
+  if (!etat.messages.length) { $("#liste").innerHTML = barre() + `<div class="vide">Aucun message.</div>`; brancherBarre(); return; }
+  $("#liste").innerHTML = barre() + etat.messages.map((m, i) => {
     const id = identite(m.destinataires);
     const p = m.processus_id && nomProc(m.processus_id);
-    return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.id ? "sel" : ""}" draggable="true" data-i="${i}">
-      <div class="l1"><span class="de">${(m.labels || []).includes("IMPORTANT") ? `<span class="imp" title="Important">▶</span>` : ""}${esc(nomExp(m.expediteur))}</span><span class="date">${dateCourte(m.date)}</span></div>
+    const qui = (m.participants?.length ? m.participants.slice(0, 3).join(", ") : nomExp(m.expediteur));
+    return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.thread_id ? "sel" : ""}" draggable="true" data-i="${i}">
+      <div class="l1">${m.suivi !== undefined ? `<span class="etoile ${m.suivi ? "oui" : ""}" data-etoile="${i}" title="Suivre">${m.suivi ? "★" : "☆"}</span>` : ""}<span class="de">${m.important ? `<span class="imp" title="Important">▶</span>` : ""}${esc(qui)}${m.nb > 1 ? `<span class="nbfil">${m.nb}</span>` : ""}</span><span class="date">${dateCourte(m.date)}</span></div>
       <div class="obj">${id ? `<span class="etiq" style="background:${id.coul}">${id.nom}</span>` : ""}${p ? `<span class="etiq" style="background:${esc(p.couleur)}">${esc(p.nom)}</span>` : ""}${esc(m.objet || "(sans objet)")}</div>
       <div class="ext">${esc(dec(m.extrait))}</div></div>`;
-  }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de messages</button></div>` : "");
+  }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de conversations</button></div>` : "");
   for (const e of document.querySelectorAll(".msg")) {
     const m = etat.messages[e.dataset.i];
-    e.onclick = () => lire(m);
-    e.ondragstart = (ev) => ev.dataTransfer.setData("text/plain", JSON.stringify({ id: m.id, compte: m.compte }));
+    e.onclick = (ev) => { if (!ev.target.dataset.etoile) lire(m); };
+    e.ondragstart = (ev) => ev.dataTransfer.setData("text/plain", JSON.stringify({ id: m.id, compte: m.compte, thread_id: m.thread_id }));
   }
+  for (const e of document.querySelectorAll("[data-etoile]")) e.onclick = async (ev) => {
+    ev.stopPropagation();
+    const m = etat.messages[e.dataset.etoile];
+    m.suivi = !m.suivi; dessinerListe();
+    api("suivre", { compte: m.compte, thread_id: m.thread_id, oui: m.suivi }).catch((er) => toast(er.message));
+  };
   if ($("#btnplus")) $("#btnplus").onclick = plus;
-  brancherFiltres();
+  brancherBarre();
 }
 
+// ---------- Lecture d'une conversation ----------
 async function lire(m) {
-  etat.sel = m.id;
+  etat.sel = m.thread_id;
   dessinerListe();
   const zone = $("#lecture");
   zone.innerHTML = `<div class="vide">Chargement…</div>`;
   try {
-    const d = await api("message", { compte: m.compte, id: m.id });
+    const d = await api("fil", { compte: m.compte, thread_id: m.thread_id });
+    const dernierIdx = d.messages.length - 1;
     const opts = `<option value="">Classer dans…</option>` + etat.moi.processus.map((p) =>
       `<option value="${p.id}" ${p.id === m.processus_id ? "selected" : ""}>${esc(p.casquette)} / ${esc(p.nom)}</option>`).join("");
     zone.innerHTML = `
-      <h2>${esc(d.objet || "(sans objet)")}</h2>
-      <div class="meta">De ${esc(d.expediteur)}<br>À ${esc(d.destinataires)}${d.cc ? `<br>Cc ${esc(d.cc)}` : ""}<br>${new Date(d.date).toLocaleString("fr-FR")}</div>
+      <h2>${esc(d.messages[0]?.objet || "(sans objet)")}</h2>
       <div class="barre"><select id="classer">${opts}</select>
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a></div>
-      ${d.pieces_jointes.length ? `<div class="pj">${d.pieces_jointes.map((p) => `<span>📎 ${esc(p.nom)}</span>`).join("")}</div>` : ""}
-      <iframe sandbox="allow-popups allow-popups-to-escape-sandbox" id="corps"></iframe>`;
-    const html = d.html || `<pre style="white-space:pre-wrap;font:14px/1.5 sans-serif">${esc(d.texte)}</pre>`;
-    $("#corps").srcdoc = `<base target="_blank"><style>body{font:14px/1.5 sans-serif;margin:12px;word-wrap:break-word}img{max-width:100%;height:auto}</style>${html}`;
+      ${d.messages.map((x, i) => `
+        <div class="carte" data-c="${i}">
+          <div class="tete"><b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+          <div class="corps" ${i === dernierIdx ? "" : "hidden"}>
+            ${x.cc ? `<div class="meta">Cc ${esc(x.cc)}</div>` : ""}
+            ${x.pieces_jointes.length ? `<div class="pj">${x.pieces_jointes.map((p) => `<span>📎 ${esc(p.nom)}</span>`).join("")}</div>` : ""}
+            <iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" data-f="${i}"></iframe>
+          </div>
+        </div>`).join("")}`;
+    d.messages.forEach((x, i) => {
+      const f = zone.querySelector(`iframe[data-f="${i}"]`);
+      const html = x.html || `<pre style="white-space:pre-wrap;font:14px/1.5 sans-serif">${esc(x.texte)}</pre>`;
+      f.onload = () => { try { f.style.height = (f.contentDocument.body.scrollHeight + 24) + "px"; } catch {} };
+      f.srcdoc = `<base target="_blank"><style>body{font:14px/1.5 sans-serif;margin:8px;word-wrap:break-word}img{max-width:100%;height:auto}</style>${html}`;
+    });
+    for (const c of zone.querySelectorAll(".carte .tete")) c.onclick = () => {
+      const corps = c.nextElementSibling; corps.hidden = !corps.hidden;
+      const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
+    };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
-    if (m.non_lu) { api("marquer_lu", { compte: m.compte, id: m.id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
+    if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
 }
 
 async function classer(m, processus_id) {
   await api("classer", { compte: m.compte, id: m.id, processus_id });
-  const loc = etat.messages.find((x) => x.id === m.id);
-  if (loc) loc.processus_id = processus_id;
+  for (const x of etat.messages) if (x.thread_id === m.thread_id) x.processus_id = processus_id;
   etat.moi = await api("moi");
   dessinerNav(); dessinerListe();
   toast(`Classé dans ${nomProc(processus_id)?.nom}`);
@@ -317,7 +385,7 @@ $("#connexion").onclick = () => connecter();
 $("#ajout").onclick = () => connecter(`&session=${encodeURIComponent(etat.session)}&compte=manuel.zacklad.cnam@gmail.com`);
 $("#sortie").onclick = () => deconnecter();
 $("#recherche").onkeydown = (ev) => {
-  if (ev.key === "Enter" && etat.vue?.boite) ouvrirBoite(etat.vue.boite, ev.target.value || "in:inbox");
+  if (ev.key === "Enter" && etat.vue?.boite) ouvrirDossier(etat.vue.boite, etat.vue.dossier, ev.target.value.trim() || undefined);
 };
 demarrer();
 </script>

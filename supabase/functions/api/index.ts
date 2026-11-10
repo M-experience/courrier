@@ -73,6 +73,106 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     return { session: s.email, comptes, processus, compteurs: nb };
   },
 
+  // Liste par conversations, comme la boîte de réception Gmail.
+  async fils(b) {
+    const compte = b.compte as string;
+    const p = new URLSearchParams({ maxResults: String(b.max ?? 50), q: b.q ?? "in:inbox category:primary" });
+    if (b.pageToken) p.set("pageToken", b.pageToken);
+    const r = await google(compte, `${GM}/threads?${p}`);
+    const ids: string[] = (r.threads ?? []).map((t: any) => t.id);
+    const fils = await Promise.all(ids.map(async (id) => {
+      const t = await google(compte,
+        `${GM}/threads/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`);
+      const msgs = t.messages ?? [];
+      const dernier = msgs[msgs.length - 1] ?? {};
+      const h = dernier.payload?.headers ?? [];
+      const labels = new Set<string>(msgs.flatMap((m: any) => m.labelIds ?? []));
+      const noms: string[] = [];
+      for (const m of msgs) {
+        const de = entete(m.payload?.headers ?? [], "From").replace(/<.*>/, "").replace(/"/g, "").trim();
+        const court = de.split(/\s+/)[0] || de;
+        if ((m.labelIds ?? []).includes("SENT")) { if (!noms.includes("moi")) noms.push("moi"); }
+        else if (court && !noms.includes(court)) noms.push(court);
+      }
+      return {
+        id: dernier.id,
+        thread_id: id,
+        expediteur: entete(h, "From"),
+        participants: noms,
+        nb: msgs.length,
+        destinataires: entete(h, "To"),
+        objet: entete(msgs[0]?.payload?.headers ?? [], "Subject") || entete(h, "Subject"),
+        date: new Date(Number(dernier.internalDate)).toISOString(),
+        extrait: dernier.snippet,
+        labels: [...labels],
+        non_lu: labels.has("UNREAD"),
+        suivi: labels.has("STARRED"),
+        important: labels.has("IMPORTANT"),
+      };
+    }));
+    const { data: classes } = await db.from("messages").select("thread_id, processus_id").in("thread_id", ids);
+    const idx = Object.fromEntries((classes ?? []).map((c) => [c.thread_id, c.processus_id]));
+    return {
+      messages: fils.map((f) => ({ ...f, processus_id: idx[f.thread_id] ?? null })),
+      pageToken: r.nextPageToken ?? null,
+    };
+  },
+
+  // Compteurs « nouveaux » des onglets de la réception.
+  async compteurs_onglets(b) {
+    const cats = ["primary", "promotions", "social", "updates", "forums"];
+    const res: Record<string, number> = {};
+    await Promise.all(cats.map(async (c) => {
+      const r = await google(b.compte, `${GM}/threads?maxResults=100&q=${encodeURIComponent(`in:inbox category:${c} is:unread`)}`);
+      res[c] = (r.threads ?? []).length;
+    }));
+    return res;
+  },
+
+  // Conversation complète.
+  async fil(b) {
+    const t = await google(b.compte, `${GM}/threads/${b.thread_id}?format=full`);
+    return {
+      thread_id: t.id,
+      messages: (t.messages ?? []).map((m: any) => {
+        const out = { html: "", texte: "", pj: [] as any[] };
+        analyser(m.payload, out);
+        const h = m.payload?.headers ?? [];
+        return {
+          id: m.id,
+          expediteur: entete(h, "From"),
+          destinataires: entete(h, "To"),
+          cc: entete(h, "Cc"),
+          objet: entete(h, "Subject"),
+          date: new Date(Number(m.internalDate)).toISOString(),
+          extrait: m.snippet,
+          non_lu: (m.labelIds ?? []).includes("UNREAD"),
+          html: out.html,
+          texte: out.texte,
+          pieces_jointes: out.pj,
+        };
+      }),
+    };
+  },
+
+  async fil_lu(b) {
+    await google(b.compte, `${GM}/threads/${b.thread_id}/modify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ removeLabelIds: ["UNREAD"] }),
+    });
+    return { ok: true };
+  },
+
+  async suivre(b) {
+    await google(b.compte, `${GM}/threads/${b.thread_id}/modify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b.oui ? { addLabelIds: ["STARRED"] } : { removeLabelIds: ["STARRED"] }),
+    });
+    return { ok: true };
+  },
+
   async liste(b) {
     const compte = b.compte as string;
     const p = new URLSearchParams({ maxResults: String(b.max ?? 40), q: b.q ?? "in:inbox" });
