@@ -75,6 +75,9 @@
   .carte .tete .dt { color: var(--doux); font-size: 12px; flex: none; }
   .carte .corps { padding: 0 12px 12px; }
   .carte iframe { min-height: 120px; flex: none; }
+  .carte.brouillon { border-color: #e8a33d; background: #fffaf1; }
+  .carte .tag { font-size: 11px; color: #9a5b00; background: #fde7c2; border-radius: 6px; padding: 0 6px; flex: none; }
+  .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; }
   #lecture { display: block; }
 </style>
 </head>
@@ -84,6 +87,7 @@
   <h1>Courrier</h1>
   <input type="search" id="recherche" placeholder="Rechercher (syntaxe Gmail)" hidden>
   <span class="esp"></span>
+  <select id="fichiers" hidden title="Fichiers de suivi alimentés par Courrier"><option value="">Fichiers de suivi…</option></select>
   <span id="qui" class="meta" style="margin:0"></span>
   <button id="ajout" hidden title="Connecter un autre compte Gmail">+ Compte</button>
   <button id="sortie" hidden>Déconnexion</button>
@@ -184,10 +188,22 @@ async function demarrer() {
   try { etat.moi = await api("moi"); } catch { return; }
   $("#accueil").hidden = true; $("#app").hidden = false;
   $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = false;
+  chargerFichiers();
   $("#qui").textContent = etat.moi.comptes.map((c) => c.email).join(" · ");
   dessinerNav();
   const principal = etat.moi.comptes.find((c) => c.role === "principal") || etat.moi.comptes[0];
   ouvrirDossier(principal.email, "INBOX");
+}
+
+// ---------- Fichiers de suivi (menu déroulant de l'en-tête) ----------
+async function chargerFichiers() {
+  try {
+    const { fichiers } = await api("fichiers");
+    const sel = $("#fichiers");
+    sel.innerHTML = `<option value="">Fichiers de suivi…</option>` + fichiers.map((f) => `<option value="${esc(f.url)}">${esc(f.nom)}</option>`).join("");
+    sel.hidden = !fichiers.length;
+    sel.onchange = () => { if (sel.value) window.open(sel.value, "_blank", "noopener"); sel.value = ""; };
+  } catch {}
 }
 
 // ---------- Navigation ----------
@@ -350,12 +366,17 @@ async function lire(m) {
       <div class="barre"><select id="classer">${opts}</select>
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a></div>
       ${d.messages.map((x, i) => `
-        <div class="carte" data-c="${i}">
-          <div class="tete"><b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
-          <div class="corps" ${i === dernierIdx ? "" : "hidden"}>
+        <div class="carte${x.brouillon ? " brouillon" : ""}" data-c="${i}">
+          <div class="tete">${x.brouillon ? `<span class="tag">Brouillon</span>` : ""}<b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+          <div class="corps" ${i === dernierIdx || x.brouillon ? "" : "hidden"}>
+            ${x.brouillon ? `<div class="meta">À ${esc(x.destinataires)}</div>` : ""}
             ${x.cc ? `<div class="meta">Cc ${esc(x.cc)}</div>` : ""}
             ${x.pieces_jointes.length ? `<div class="pj">${x.pieces_jointes.map((p) => `<span>📎 ${esc(p.nom)}</span>`).join("")}</div>` : ""}
             <iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" data-f="${i}"></iframe>
+            ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
+              <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
+              <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Modifier dans Gmail</button></a>
+            </div>` : ""}
           </div>
         </div>`).join("")}`;
     d.messages.forEach((x, i) => {
@@ -369,6 +390,13 @@ async function lire(m) {
       const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    for (const b of zone.querySelectorAll("[data-envoyer]")) b.onclick = async () => {
+      const x = d.messages.find((y) => y.draft_id === b.dataset.envoyer);
+      if (!confirm(`Envoyer ce brouillon à ${x?.destinataires || "son destinataire"}${x?.cc ? " (copie : " + x.cc + ")" : ""} ?`)) return;
+      b.disabled = true; b.textContent = "Envoi…";
+      try { await api("envoyer_brouillon", { compte: m.compte, draft_id: b.dataset.envoyer }); toast("Message envoyé"); lire(m); }
+      catch (er) { toast(er.message); b.disabled = false; b.textContent = "Envoyer ce brouillon"; }
+    };
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
 }

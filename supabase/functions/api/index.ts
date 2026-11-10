@@ -132,6 +132,12 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
   // Conversation complète.
   async fil(b) {
     const t = await google(b.compte, `${GM}/threads/${b.thread_id}?format=full`);
+    // Brouillons du fil : on retrouve l'identifiant de brouillon (nécessaire pour l'envoyer).
+    const brouillons: Record<string, string> = {};
+    if ((t.messages ?? []).some((m: any) => (m.labelIds ?? []).includes("DRAFT"))) {
+      const d = await google(b.compte, `${GM}/drafts?maxResults=200`);
+      for (const x of d.drafts ?? []) if (x.message?.threadId === t.id) brouillons[x.message.id] = x.id;
+    }
     return {
       thread_id: t.id,
       messages: (t.messages ?? []).map((m: any) => {
@@ -150,9 +156,29 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
           html: out.html,
           texte: out.texte,
           pieces_jointes: out.pj,
+          brouillon: (m.labelIds ?? []).includes("DRAFT"),
+          draft_id: brouillons[m.id] ?? null,
         };
       }),
     };
+  },
+
+  // Envoi d'un brouillon existant (préparé par Courrier ou dans Gmail), à la demande de l'utilisateur.
+  async envoyer_brouillon(b) {
+    const r = await google(b.compte, `${GM}/drafts/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: b.draft_id }),
+    });
+    await db.from("journal").insert({ type: "envoi", message_id: r.id, details: { draft_id: b.draft_id, depuis: "Courrier" } });
+    return { ok: true, id: r.id };
+  },
+
+  // Fichiers de suivi (Google Sheets) alimentés par les règles.
+  async fichiers() {
+    const { data } = await db.from("parametres").select("cle, valeur").like("cle", "sheet:%");
+    return { fichiers: (data ?? []).map((x) => ({ nom: x.cle.slice(6), url: `https://docs.google.com/spreadsheets/d/${x.valeur}/edit` }))
+      .sort((a, b) => a.nom.localeCompare(b.nom)) };
   },
 
   async fil_lu(b) {
