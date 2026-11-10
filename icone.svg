@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="28" fill="#23221f"/>
+  <!-- enveloppe -->
+  <rect x="22" y="36" width="84" height="58" rx="9" fill="#f6f5f2"/>
+  <path d="M24 40 L64 70 L104 40" fill="none" stroke="#23221f" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- pastilles des casquettes : EDM, CNAM, Recrutement, Perso -->
+  <circle cx="44" cy="108" r="6" fill="#2f6fb3"/>
+  <circle cx="58" cy="108" r="6" fill="#b3442f"/>
+  <circle cx="72" cy="108" r="6" fill="#3f8f4f"/>
+  <circle cx="86" cy="108" r="6" fill="#7a5bb3"/>
+</svg>
