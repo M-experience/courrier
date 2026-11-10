@@ -69,7 +69,11 @@
   .etoile.oui { color: #e3a008; }
   .nbfil { color: var(--doux); font-size: 12px; margin-left: 4px; }
   .carte { border: 1px solid var(--ligne); border-radius: 8px; margin-bottom: 10px; }
-  .carte .tete { padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; }
+  .carte .tete { padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; border-radius: 8px; }
+  .carte .tete:hover { background: var(--sel); }
+  .carte .tete .chev-m { color: var(--doux); font-size: 11px; transition: transform .15s; flex: none; }
+  .carte .tete.ouvert .chev-m { transform: rotate(90deg); }
+  .carte .tete .rep-tete { flex: none; padding: 0 7px; font-size: 13px; line-height: 20px; }
   .carte .tete b { flex: none; }
   .carte .tete .ex { flex: 1; color: var(--doux); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
   .carte .tete .dt { color: var(--doux); font-size: 12px; flex: none; }
@@ -79,6 +83,11 @@
   .carte .tag { font-size: 11px; color: #9a5b00; background: #fde7c2; border-radius: 6px; padding: 0 6px; flex: none; }
   .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   #redaction { border-color: var(--accent); }
+  .champs-r { display: grid; grid-template-columns: 44px 1fr; gap: 4px 8px; align-items: center; margin-top: 6px; font-size: 13px; }
+  .champs-r label { color: var(--doux); }
+  .champs-r input { padding: 4px 7px; border: 1px solid var(--ligne); border-radius: 6px; font: inherit; }
+  .rep-msg { display: flex; gap: 6px; margin-top: 6px; }
+  .rep-msg button { font-size: 12px; padding: 2px 8px; }
   #redaction textarea { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--ligne); border-radius: 8px; font: 14px/1.5 inherit; font-family: inherit; resize: vertical; }
   .pj button { font-size: 12.5px; padding: 3px 8px; }
   /* Classeurs repliables de la barre de gauche */
@@ -469,10 +478,10 @@ async function lire(m, depuisTableau = false) {
       <div class="barre"><select id="classer">${opts}</select>
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a>
         <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a>
-        <button id="b-repondre">↩ Répondre</button><button id="b-tous">↩ Répondre à tous</button></div>
+        <button id="b-repondre">↩ Répondre</button><button id="b-tous">↩ Répondre à tous</button>${d.messages.length > 1 ? `<button id="b-deplier">Tout déplier</button>` : ""}</div>
       ${d.messages.map((x, i) => `
         <div class="carte${x.brouillon ? " brouillon" : ""}" data-c="${i}">
-          <div class="tete">${x.brouillon ? `<span class="tag">Brouillon</span>` : ""}<b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
+          <div class="tete" title="Cliquer pour ouvrir ou refermer ce message"><span class="chev-m">▸</span>${x.brouillon ? `<span class="tag">Brouillon</span>` : ""}<b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>${x.brouillon ? "" : `<button class="rep-tete" data-rep="${i}" title="Répondre à ce message">↩</button>`}</div>
           <div class="corps" ${i === dernierIdx || x.brouillon ? "" : "hidden"}>
             ${x.brouillon ? `<div class="meta">À ${esc(x.destinataires)}</div>` : ""}
             ${x.cc ? `<div class="meta">Cc ${esc(x.cc)}</div>` : ""}
@@ -480,6 +489,7 @@ async function lire(m, depuisTableau = false) {
               ? `<span>📎 ${esc(p.nom)}</span>`
               : `<button data-ranger="${i}:${k}" title="Ranger cette pièce jointe dans Drive">📎 ${esc(p.nom)} · Ranger dans Drive…</button>`).join("")}</div>` : ""}
             <iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" data-f="${i}"></iframe>
+            ${x.brouillon ? "" : `<div class="rep-msg"><button data-rep="${i}">↩ Répondre à ce message</button><button data-reptous="${i}">↩ Répondre à tous</button></div>`}
             ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
               <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
               <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${x.id}" target="_blank" rel="noopener"><button>Modifier dans Mimestream</button></a>
@@ -498,9 +508,19 @@ async function lire(m, depuisTableau = false) {
       f.onload = () => { try { f.style.height = (f.contentDocument.body.scrollHeight + 24) + "px"; } catch {} };
       f.srcdoc = `<base target="_blank"><style>body{font:14px/1.5 sans-serif;margin:8px;word-wrap:break-word}img{max-width:100%;height:auto}</style>${html}`;
     });
-    for (const c of zone.querySelectorAll(".carte .tete")) c.onclick = () => {
-      const corps = c.nextElementSibling; corps.hidden = !corps.hidden;
+    const basculer = (c, ouvrir) => {
+      const corps = c.nextElementSibling; corps.hidden = ouvrir === undefined ? !corps.hidden : !ouvrir;
+      c.classList.toggle("ouvert", !corps.hidden);
       const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
+    };
+    for (const c of zone.querySelectorAll(".carte .tete")) {
+      c.classList.toggle("ouvert", !c.nextElementSibling.hidden);
+      c.onclick = (ev) => { if (!ev.target.closest("button")) basculer(c); };
+    }
+    if ($("#b-deplier")) $("#b-deplier").onclick = (ev) => {
+      const tout = ev.target.textContent === "Tout déplier";
+      for (const c of zone.querySelectorAll(".carte .tete")) basculer(c, tout);
+      ev.target.textContent = tout ? "Tout replier" : "Tout déplier";
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
     for (const b of zone.querySelectorAll("[data-ranger]")) b.onclick = () => {
@@ -535,6 +555,8 @@ async function lire(m, depuisTableau = false) {
     const aRepondre = d.messages.filter((x) => !x.brouillon).pop();
     $("#b-repondre").onclick = () => ouvrirReponse(m, aRepondre, false);
     $("#b-tous").onclick = () => ouvrirReponse(m, aRepondre, true);
+    for (const b of zone.querySelectorAll("[data-rep]")) b.onclick = (ev) => { ev.stopPropagation(); ouvrirReponse(m, d.messages[b.dataset.rep], false); };
+    for (const b of zone.querySelectorAll("[data-reptous]")) b.onclick = () => ouvrirReponse(m, d.messages[b.dataset.reptous], true);
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
 }
@@ -549,7 +571,8 @@ async function ouvrirReponse(m, msg, tous) {
   if (sigDefaut && sigDefaut !== "aucune" && !sigs.some((g) => g.id === sigDefaut)) sigDefaut = "";
   zone.insertAdjacentHTML("beforeend", `<div id="redaction" class="carte">
     <div class="corps" style="padding-top:10px">
-      <div class="meta" id="r-dest">Préparation…</div>
+      <div class="meta">En réponse au message de <b>${esc(nomExp(msg.expediteur))}</b> du ${new Date(msg.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
+      <div class="champs-r" id="r-dest">Préparation…</div>
       <textarea id="r-texte" rows="9" placeholder="Votre réponse…"></textarea>
       <div class="actions-brouillon">
         <select id="r-sig" title="Signature">${sigs.map((g) => `<option value="${g.id}" ${g.id === sigDefaut ? "selected" : ""}>Signature : ${esc(g.nom)}</option>`).join("")}<option value="aucune" ${sigDefaut === "aucune" ? "selected" : ""}>Sans signature</option></select>
@@ -567,17 +590,22 @@ async function ouvrirReponse(m, msg, tous) {
   let ap;
   try {
     ap = await api("repondre", { ...base, apercu: true });
-    $("#r-dest").innerHTML = `De ${esc(ap.de)}<br>À ${esc(ap.a)}${ap.cc ? `<br>Cc ${esc(ap.cc)}` : ""}<br>Objet ${esc(ap.objet)}`;
+    $("#r-dest").innerHTML = `<label>De</label><span>${esc(ap.de)}</span>
+      <label for="r-a">À</label><input id="r-a" value="${esc(ap.a)}">
+      <label for="r-cc">Cc</label><input id="r-cc" value="${esc(ap.cc)}" placeholder="(aucun)">
+      <label>Objet</label><span>${esc(ap.objet)}</span>`;
     $("#r-envoyer").disabled = $("#r-brouillon").disabled = false;
   } catch (e) { $("#r-dest").textContent = e.message; return; }
   const partir = async (envoyer) => {
     const texte = $("#r-texte").value.trim();
     if (!texte) return toast("Le message est vide.");
-    if (envoyer && !confirm(`Envoyer cette réponse à ${ap.a}${ap.cc ? " (copie : " + ap.cc + ")" : ""} ?`)) return;
+    const a = $("#r-a").value.trim(), cc = $("#r-cc").value.trim();
+    if (!a) return toast("Indiquez au moins un destinataire.");
+    if (envoyer && !confirm(`Envoyer cette réponse à ${a}${cc ? " (copie : " + cc + ")" : ""} ?`)) return;
     const sig = $("#r-sig").value;
     for (const b of r.querySelectorAll("button")) b.disabled = true;
     try {
-      await api("repondre", { ...base, texte, envoyer, signature_id: sig && sig !== "aucune" ? sig : null });
+      await api("repondre", { ...base, texte, envoyer, a, cc, signature_id: sig && sig !== "aucune" ? sig : null });
       toast(envoyer ? "Réponse envoyée" : "Brouillon enregistré");
       await lire(m, true);
     } catch (e) { toast(e.message); for (const b of r.querySelectorAll("button")) b.disabled = false; }

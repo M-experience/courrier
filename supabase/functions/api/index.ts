@@ -253,6 +253,10 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     if (b.apercu) return { de: r.de, a: r.a.join(", "), cc: r.cc.join(", "), objet: r.objet };
     const texte = String(b.texte ?? "").trim();
     if (!texte) throw new Error("Le message est vide.");
+    // Destinataires corrigés à la main dans l'éditeur.
+    if (typeof b.a === "string") r.a = listeAdresses(b.a);
+    if (typeof b.cc === "string") r.cc = listeAdresses(b.cc);
+    if (!r.a.length || !r.a.every((x) => adresses(x).length)) throw new Error("Destinataire manquant ou invalide.");
     const { data: sig } = b.signature_id ? await db.from("signatures").select("html").eq("id", b.signature_id).maybeSingle() : { data: null };
     const out = { html: "", texte: "", pj: [] as any[] };
     analyser(r.m.payload, out);
