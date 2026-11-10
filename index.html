@@ -57,6 +57,10 @@
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #23221f; color: #fff; padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.vu { opacity: .92; }
   .plus { text-align: center; padding: 10px; }
+  .filtres { position: sticky; top: 0; z-index: 1; background: var(--panneau); display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--ligne); }
+  .filtres button { padding: 3px 9px; font-size: 12.5px; border-radius: 14px; }
+  .filtres button.actif { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .imp { color: #e3a008; font-size: 13px; margin-right: 2px; }
 </style>
 </head>
 <body>
@@ -100,6 +104,19 @@ function identite(dest) {
   for (const [re, nom, coul] of IDENTITES) if (re.test(dest || "")) return { nom, coul };
   return null;
 }
+
+const FILTRES = [
+  ["Tous", "in:inbox"],
+  ["Importants", "in:inbox is:important"],
+  ["Principale", "in:inbox category:primary"],
+  ["Non lus", "in:inbox is:unread"],
+  ["Suivis", "is:starred"],
+  ["Forums", "in:inbox category:forums"],
+  ["Notifications", "in:inbox category:updates"],
+  ["Promotions", "in:inbox category:promotions"],
+  ["Réseaux sociaux", "in:inbox category:social"],
+];
+function filtreMemo() { try { return localStorage.getItem("courrier.filtre") || "in:inbox"; } catch { return "in:inbox"; } }
 
 let etat = { session: null, moi: null, vue: null, messages: [], pageToken: null, sel: null };
 
@@ -191,9 +208,10 @@ function marquerNav() {
 }
 
 async function ouvrirBoite(email, q) {
-  etat.vue = { boite: email, q: q || "in:inbox" };
+  etat.vue = { boite: email, q: q || filtreMemo() };
   marquerNav();
-  $("#liste").innerHTML = `<div class="vide">Chargement…</div>`;
+  $("#liste").innerHTML = barreFiltres() + `<div class="vide">Chargement…</div>`;
+  brancherFiltres();
   try {
     const d = await api("liste", { compte: email, q: etat.vue.q });
     etat.messages = d.messages.map((m) => ({ ...m, compte: email }));
@@ -230,13 +248,27 @@ function dateCourte(iso) {
 
 function nomExp(de) { return (de || "").replace(/<.*>/, "").replace(/"/g, "").trim() || de; }
 
+function barreFiltres() {
+  if (!etat.vue?.boite) return "";
+  return `<div class="filtres">${FILTRES.map(([nom, q]) =>
+    `<button data-q="${esc(q)}" class="${etat.vue.q === q ? "actif" : ""}">${esc(nom)}</button>`).join("")}</div>`;
+}
+
+function brancherFiltres() {
+  for (const b of document.querySelectorAll(".filtres button")) b.onclick = () => {
+    try { localStorage.setItem("courrier.filtre", b.dataset.q); } catch {}
+    $("#recherche").value = "";
+    ouvrirBoite(etat.vue.boite, b.dataset.q);
+  };
+}
+
 function dessinerListe() {
-  if (!etat.messages.length) { $("#liste").innerHTML = `<div class="vide">Aucun message.</div>`; return; }
-  $("#liste").innerHTML = etat.messages.map((m, i) => {
+  if (!etat.messages.length) { $("#liste").innerHTML = barreFiltres() + `<div class="vide">Aucun message.</div>`; brancherFiltres(); return; }
+  $("#liste").innerHTML = barreFiltres() + etat.messages.map((m, i) => {
     const id = identite(m.destinataires);
     const p = m.processus_id && nomProc(m.processus_id);
     return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.id ? "sel" : ""}" draggable="true" data-i="${i}">
-      <div class="l1"><span class="de">${esc(nomExp(m.expediteur))}</span><span class="date">${dateCourte(m.date)}</span></div>
+      <div class="l1"><span class="de">${(m.labels || []).includes("IMPORTANT") ? `<span class="imp" title="Important">▶</span>` : ""}${esc(nomExp(m.expediteur))}</span><span class="date">${dateCourte(m.date)}</span></div>
       <div class="obj">${id ? `<span class="etiq" style="background:${id.coul}">${id.nom}</span>` : ""}${p ? `<span class="etiq" style="background:${esc(p.couleur)}">${esc(p.nom)}</span>` : ""}${esc(m.objet || "(sans objet)")}</div>
       <div class="ext">${esc(dec(m.extrait))}</div></div>`;
   }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de messages</button></div>` : "");
@@ -246,6 +278,7 @@ function dessinerListe() {
     e.ondragstart = (ev) => ev.dataTransfer.setData("text/plain", JSON.stringify({ id: m.id, compte: m.compte }));
   }
   if ($("#btnplus")) $("#btnplus").onclick = plus;
+  brancherFiltres();
 }
 
 async function lire(m) {
