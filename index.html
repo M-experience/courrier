@@ -205,6 +205,10 @@ async function demarrer() {
     history.replaceState(null, "", location.pathname);
     $("#accueil").insertAdjacentHTML("afterbegin", `<p style="color:#b3442f;max-width:560px;text-align:center">${esc(h.get("erreur"))}</p>`);
   }
+  if (h.get("dropbox")) {
+    history.replaceState(null, "", location.pathname);
+    setTimeout(() => toast("Dropbox connectée : elle apparaît dans le classeur"), 800);
+  }
   if (h.get("session")) {
     memo("courrier.session", h.get("session"));
     history.replaceState(null, "", location.pathname);
@@ -470,7 +474,10 @@ const ICONE_DOSSIER = (c) => `<svg viewBox="0 0 54 44"><path d="M3 8a4 4 0 0 1 4
 let cl = null; // état du classeur ouvert
 
 function ouvrirClasseur(compteMail, msg, pj) {
-  const comptes = etat.moi.comptes.filter((c) => c.role !== "recrutement");
+  const comptes = [
+    ...etat.moi.comptes.filter((c) => c.role !== "recrutement").map((c) => ({ email: c.email, libelle: c.email })),
+    ...(etat.moi.dropbox ?? []).map((d) => ({ email: "dropbox:" + d.email, libelle: "Dropbox · " + d.email })),
+  ];
   cl = { compteMail, msg, pj, comptes, compte: comptes[0].email, chemin: [{ id: "root", nom: "Mon Drive" }], recherche: "" };
   document.body.insertAdjacentHTML("beforeend", `<div id="classeur"><div class="boite">
     <div class="haut"><h3>Ranger « ${esc(pj.nom)} » dans Drive</h3><div class="comptes"></div></div>
@@ -492,20 +499,25 @@ function fermerClasseur() { $("#classeur")?.remove(); document.removeEventListen
 
 async function chargerClasseur() {
   const c = $("#classeur"); if (!c) return;
-  const coul = (email) => identite(email)?.coul ?? "#8a8578";
+  const coul = (email) => String(email).startsWith("dropbox:") ? "#0061fe" : identite(email)?.coul ?? "#8a8578";
+  const estDropbox = cl.compte.startsWith("dropbox:");
   c.querySelector(".comptes").innerHTML = cl.comptes.map((x) =>
-    `<button data-compte="${esc(x.email)}" class="${x.email === cl.compte ? "actif" : ""}"><span class="pastille" style="display:inline-block;background:${coul(x.email)}"></span> ${esc(x.email)}</button>`).join("")
-    + `<button id="cl-ajout" title="Connecter le compte EDM pour ranger dans son Drive">+ Drive EDM</button>`;
+    `<button data-compte="${esc(x.email)}" class="${x.email === cl.compte ? "actif" : ""}"><span class="pastille" style="display:inline-block;background:${coul(x.email)}"></span> ${esc(x.libelle)}</button>`).join("")
+    + `<button id="cl-ajout" title="Connecter le compte EDM pour ranger dans son Drive">+ Drive EDM</button>`
+    + `<button id="cl-dropbox" title="Connecter votre Dropbox">+ Dropbox</button>`;
   for (const b of c.querySelectorAll("[data-compte]")) b.onclick = () => {
-    cl.compte = b.dataset.compte; cl.chemin = [{ id: "root", nom: "Mon Drive" }]; cl.recherche = ""; c.querySelector(".outils input").value = ""; chargerClasseur();
+    cl.compte = b.dataset.compte; cl.recherche = ""; c.querySelector(".outils input").value = "";
+    cl.chemin = [{ id: "root", nom: cl.compte.startsWith("dropbox:") ? "Dropbox" : "Mon Drive" }]; chargerClasseur();
   };
+  $("#cl-dropbox").hidden = (etat.moi.dropbox ?? []).length > 0;
+  $("#cl-dropbox").onclick = () => { location.href = `${API}/dropbox-start?session=${encodeURIComponent(etat.session)}&retour=${encodeURIComponent(RETOUR)}`; };
   const dejaEdm = cl.comptes.some((x) => /ecole-edm\.fr/.test(x.email));
   $("#cl-ajout").hidden = dejaEdm;
   $("#cl-ajout").onclick = () => connecter(`&session=${encodeURIComponent(etat.session)}&compte=contact@ecole-edm.fr`);
   const actuel = cl.chemin[cl.chemin.length - 1];
   c.querySelector(".fil").innerHTML = cl.recherche ? `Résultats pour « ${esc(cl.recherche)} »`
     : cl.chemin.map((x, i) => i < cl.chemin.length - 1 ? `<a data-niveau="${i}">${esc(x.nom)}</a>` : `<b>${esc(x.nom)}</b>`).join(" › ")
-      + (cl.chemin.length === 1 ? ` · <a data-partages>Partagés avec moi</a>` : "");
+      + (cl.chemin.length === 1 && !estDropbox ? ` · <a data-partages>Partagés avec moi</a>` : "");
   for (const a of c.querySelectorAll("[data-niveau]")) a.onclick = () => { cl.chemin = cl.chemin.slice(0, Number(a.dataset.niveau) + 1); chargerClasseur(); };
   const p = c.querySelector("[data-partages]"); if (p) p.onclick = () => { cl.chemin.push({ id: "partages", nom: "Partagés avec moi" }); chargerClasseur(); };
   c.querySelector(".bas .meta").textContent = cl.recherche ? "Ouvrez un dossier pour le choisir." : `Destination : ${actuel.nom} (${cl.compte})`;
@@ -519,11 +531,11 @@ async function chargerClasseur() {
       : `<div style="cursor:default;color:var(--doux)">Aucun pour l'instant</div>`);
     for (const el of c.querySelectorAll("[data-recent]")) el.onclick = () => { const x = r.recents[Number(el.dataset.recent)]; rangerIci(x.compte, x.id, x.nom); };
     g.innerHTML = r.dossiers.length ? r.dossiers.map((x, i) =>
-      `<div class="dossier" data-d="${i}" title="${esc(x.name)}"><i style="background:${coul(cl.compte)}"></i>${ICONE_DOSSIER(x.folderColorRgb || "#8fb3e8")}<span>${esc(x.name)}</span></div>`).join("")
+      `<div class="dossier" data-d="${i}" title="${esc(x.name)}"><i style="background:${coul(cl.compte)}"></i>${ICONE_DOSSIER(x.folderColorRgb || (estDropbox ? "#7fa7f5" : "#8fb3e8"))}<span>${esc(x.name)}</span></div>`).join("")
       : `<div class="vide" style="grid-column:1/-1">Aucun sous-dossier. Vous pouvez ranger ici.</div>`;
     for (const el of g.querySelectorAll("[data-d]")) el.onclick = () => {
       const x = r.dossiers[Number(el.dataset.d)];
-      if (cl.recherche) { cl.recherche = ""; c.querySelector(".outils input").value = ""; cl.chemin = [{ id: "root", nom: "Mon Drive" }]; }
+      if (cl.recherche) { cl.recherche = ""; c.querySelector(".outils input").value = ""; cl.chemin = [{ id: "root", nom: estDropbox ? "Dropbox" : "Mon Drive" }]; }
       cl.chemin.push({ id: x.id, nom: x.name }); chargerClasseur();
     };
   } catch (e) { g.innerHTML = `<div class="vide" style="grid-column:1/-1">${esc(e.message)}</div>`; }

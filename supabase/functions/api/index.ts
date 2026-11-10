@@ -1,4 +1,4 @@
-import { cors, db, google, json, parLots } from "../_shared/commun.ts";
+import { cors, db, dropbox, google, json, parLots } from "../_shared/commun.ts";
 
 const GM = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -71,7 +71,8 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const nb: Record<string, number> = {};
     for (const m of compteurs ?? []) if (m.processus_id) nb[m.processus_id] = (nb[m.processus_id] ?? 0) + 1;
     const { data: signatures } = await db.from("signatures").select("id, nom").order("ordre");
-    return { session: s.email, comptes, processus, compteurs: nb, signatures };
+    const { data: dropbox_comptes } = await db.from("comptes_dropbox").select("email, nom");
+    return { session: s.email, comptes, processus, compteurs: nb, signatures, dropbox: dropbox_comptes ?? [] };
   },
 
   // Liste par conversations, comme la boîte de réception Gmail.
@@ -213,6 +214,23 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
   // ---------- Rangement des pièces jointes dans Drive ----------
   // Sous-dossiers d'un dossier (parent = "root", "partages" ou un identifiant), ou recherche par nom.
   async drive_dossiers(b) {
+    const { data: rec } = await db.from("parametres").select("valeur").eq("cle", "drive_recents").maybeSingle();
+    const recents = JSON.parse(rec?.valeur ?? "[]");
+    // Dropbox : compte « dropbox:<email> », dossiers désignés par leur chemin ("" = racine).
+    if (String(b.compte).startsWith("dropbox:")) {
+      const email = b.compte.slice(8);
+      let entrees: any[];
+      if (b.recherche) {
+        const r = await dropbox(email, "files/search_v2", { query: b.recherche, options: { file_categories: [{ ".tag": "folder" }], max_results: 100 } });
+        entrees = (r.matches ?? []).map((x: any) => x.metadata?.metadata).filter(Boolean);
+      } else {
+        const r = await dropbox(email, "files/list_folder", { path: b.parent === "root" ? "" : b.parent, limit: 2000 });
+        entrees = r.entries ?? [];
+      }
+      const dossiers = entrees.filter((x) => x[".tag"] === "folder")
+        .map((x) => ({ id: x.path_lower, name: x.name })).sort((x, y) => x.name.localeCompare(y.name, "fr"));
+      return { dossiers, recents };
+    }
     const DOSSIER = "mimeType='application/vnd.google-apps.folder' and trashed=false";
     const q = b.recherche
       ? `${DOSSIER} and name contains '${String(b.recherche).replace(/\\/g, "").replace(/'/g, "\\'")}'`
@@ -223,8 +241,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       supportsAllDrives: "true", includeItemsFromAllDrives: "true",
     });
     const r = await google(b.compte, `https://www.googleapis.com/drive/v3/files?${p}`);
-    const { data } = await db.from("parametres").select("valeur").eq("cle", "drive_recents").maybeSingle();
-    return { dossiers: r.files ?? [], recents: JSON.parse(data?.valeur ?? "[]") };
+    return { dossiers: r.files ?? [], recents };
   },
 
   // Copie une pièce jointe Gmail dans un dossier Drive (éventuellement d'un autre compte).
@@ -232,6 +249,13 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const pj = await google(b.compte, `${GM}/messages/${b.message_id}/attachments/${b.attachment_id}`);
     const bin = atob(pj.data.replace(/-/g, "+").replace(/_/g, "/"));
     const octets = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    let lien: string | null = null, fichierId: string;
+    if (String(b.drive_compte).startsWith("dropbox:")) {
+      // Dropbox : renommage automatique si un fichier du même nom existe déjà.
+      const f = await dropbox(b.drive_compte.slice(8), "files/upload",
+        { path: `${b.dossier_id}/${b.nom}`, mode: "add", autorename: true, mute: true }, octets);
+      fichierId = f.id;
+    } else {
     const limite = "courrier" + crypto.randomUUID();
     const enc = new TextEncoder();
     const debut = enc.encode(`--${limite}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
@@ -244,14 +268,16 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink", {
         method: "POST", headers: { "Content-Type": `multipart/related; boundary=${limite}` }, body: corps,
       });
+    lien = f.webViewLink; fichierId = f.id;
+    }
     // Dossiers récents (8 au plus), pour les proposer en premier la fois suivante.
     const { data } = await db.from("parametres").select("valeur").eq("cle", "drive_recents").maybeSingle();
     const recents = [{ compte: b.drive_compte, id: b.dossier_id, nom: b.dossier_nom },
       ...JSON.parse(data?.valeur ?? "[]").filter((x: any) => x.id !== b.dossier_id)].slice(0, 8);
     await db.from("parametres").upsert({ cle: "drive_recents", valeur: JSON.stringify(recents) });
     await db.from("journal").insert({ type: "rangement_drive", message_id: b.message_id,
-      details: { fichier: b.nom, compte: b.drive_compte, dossier: b.dossier_nom, drive_id: f.id } });
-    return { ok: true, lien: f.webViewLink };
+      details: { fichier: b.nom, compte: b.drive_compte, dossier: b.dossier_nom, fichier_id: fichierId } });
+    return { ok: true, lien };
   },
 
   // Fichiers de suivi (Google Sheets) alimentés par les règles.

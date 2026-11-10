@@ -88,6 +88,41 @@ export async function google(email: string, url: string, init: RequestInit = {},
   return r.status === 204 ? null : r.json();
 }
 
+// ---------- Dropbox ----------
+export const DBX_KEY = (Deno.env.get("DROPBOX_APP_KEY") ?? "").trim();
+export const DBX_SECRET = (Deno.env.get("DROPBOX_APP_SECRET") ?? "").trim();
+export const DBX_REDIRECT = `${Deno.env.get("SUPABASE_URL")}/functions/v1/dropbox-callback`;
+
+async function jetonDropbox(email: string): Promise<string> {
+  const { data: c } = await db.from("comptes_dropbox").select("*").eq("email", email).single();
+  if (!c) throw new Error(`Compte Dropbox inconnu : ${email}`);
+  if (c.access_token && c.expires_at && new Date(c.expires_at).getTime() > Date.now() + 60_000) return c.access_token;
+  const r = await fetch("https://api.dropboxapi.com/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refresh_token, client_id: DBX_KEY, client_secret: DBX_SECRET }),
+  });
+  const t = await r.json();
+  if (!r.ok) throw new Error(`Dropbox refuse le rafraîchissement : ${t.error_description ?? t.error ?? r.status}`);
+  await db.from("comptes_dropbox").update({ access_token: t.access_token, expires_at: new Date(Date.now() + (t.expires_in ?? 14400) * 1000).toISOString() }).eq("email", email);
+  return t.access_token;
+}
+
+// Appel à l'API Dropbox (JSON), ou envoi de contenu si « octets » est fourni.
+export async function dropbox(email: string, route: string, arg: unknown, octets?: Uint8Array): Promise<any> {
+  const token = await jetonDropbox(email);
+  // L'en-tête Dropbox-API-Arg doit être en ASCII : les caractères accentués sont échappés.
+  const argAscii = JSON.stringify(arg).replace(/[\u007f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+  const r = octets
+    ? await fetch(`https://content.dropboxapi.com/2/${route}`, { method: "POST", body: octets,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", "Dropbox-API-Arg": argAscii } })
+    : await fetch(`https://api.dropboxapi.com/2/${route}`, { method: "POST", body: arg === null ? undefined : JSON.stringify(arg),
+        headers: { Authorization: `Bearer ${token}`, ...(arg === null ? {} : { "Content-Type": "application/json" }) } });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`Dropbox ${r.status} : ${txt.slice(0, 300)}`);
+  return txt ? JSON.parse(txt) : null;
+}
+
 /** Exécute des tâches avec un nombre limité d'appels simultanés (quota Gmail). */
 export async function parLots<T, R>(items: T[], n: number, f: (x: T) => Promise<R>): Promise<R[]> {
   const res: R[] = new Array(items.length);
