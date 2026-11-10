@@ -234,7 +234,9 @@ async function reconstruire(compte: string, r: any) {
   const ancien = await google(compte, `${base}/values/Candidats!A1:I10000`);
   const avis = new Map<string, string>();
   for (const l of (ancien.values ?? []).slice(1)) if (l[8]) avis.set((l[6] ?? "").toLowerCase(), l[8]);
-  const lignes = [...parEmail.values()].map((v) => [...v.ligne, avis.get(String(v.ligne[6]).toLowerCase()) ?? ""]);
+  // Du plus récent au plus ancien (date du premier message du candidat, au format AAAA-MM-JJ).
+  const lignes = [...parEmail.values()].map((v) => [...v.ligne, avis.get(String(v.ligne[6]).toLowerCase()) ?? ""])
+    .sort((x, y) => String(y[2]).localeCompare(String(x[2])));
   await google(compte, `${base}/values/Candidats!A1:I10000:clear`, { method: "POST" });
   await google(compte, `${base}/values/Candidats!A1?valueInputOption=USER_ENTERED`, {
     method: "PUT",
@@ -351,12 +353,19 @@ Deno.serve(async (req) => {
               });
               fait.push("ligne existante complétée (même candidat)");
             } else {
-              await google(compte, `${base}/Candidats!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+              // Nouvelle ligne insérée en tête (ligne 2) : le tableau reste trié du plus récent au plus ancien.
+              await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}:batchUpdate`, {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ requests: [{ insertDimension: {
+                  range: { sheetId: 0, dimension: "ROWS", startIndex: 1, endIndex: 2 }, inheritFromBefore: false } }] }),
+              });
+              await google(compte, `${base}/Candidats!A2:H2?valueInputOption=USER_ENTERED`, {
+                method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ values: [ligneSheet(np, date, a, email, lien)] }),
               });
-              fait.push("ligne ajoutée au Sheet");
+              fait.push("ligne ajoutée en tête du Sheet");
             }
           } else if (action.type === "brouillon") {
             // Ordre : certificat seul, puis candidat international hors UE (ENIC-NARIC, Campus France),
