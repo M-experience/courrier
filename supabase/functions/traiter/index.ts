@@ -123,12 +123,13 @@ function profil(corps: string, objet: string) {
   return pro > 0 ? `Profil mixte, à préciser${detail}` : "À préciser";
 }
 
-const CLE_CLAUDE = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
 const FORMATIONS = ["M1 Transition numérique & co-design", "M2 Transition numérique & co-design", "M1 CIME", "M2 CIME",
   "Master (niveau non précisé)", "Certificat UX (CS3600A)", "Certificat UX (CS3600A) et/ou M2 Transition numérique & co-design", "Autre"];
 
 // Analyse fine par Claude : formation, profil, résumé, nom et prénom. Renvoie null si indisponible.
 async function analyseClaude(de: string, objet: string, corps: string) {
+  // Lu à chaque appel : un secret ajouté après le démarrage est pris en compte.
+  const CLE_CLAUDE = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
   if (!CLE_CLAUDE) return null;
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -136,7 +137,7 @@ async function analyseClaude(de: string, objet: string, corps: string) {
       headers: { "x-api-key": CLE_CLAUDE, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({
         model: "claude-haiku-5-5",
-        max_tokens: 500,
+        max_tokens: 2000,
         system: "Tu analyses des demandes d'admission adressées au Master Information-Communication du Cnam (parcours Transition numérique & co-design, et parcours CIME) et au certificat de spécialisation Design UX CS3600A. Réponds uniquement par un objet JSON, sans texte autour.",
         messages: [{ role: "user", content:
 `Expéditeur : ${de}
@@ -152,9 +153,11 @@ Renvoie un JSON avec les clés :
 - "resume" : une ou deux phrases en français résumant la situation du candidat et ses questions.` }],
       }),
     });
-    if (!r.ok) return null;
+    if (!r.ok) { console.error("Claude", r.status, (await r.text()).slice(0, 300)); return null; }
     const d = await r.json();
-    const txt = d.content?.[0]?.text ?? "";
+    // Concatène les blocs de texte (la réponse peut commencer par un autre type de bloc).
+    const txt = (d.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+    if (!txt.includes("{")) { console.error("Claude sans JSON", d.stop_reason, JSON.stringify(d.content ?? []).slice(0, 300)); return null; }
     const j = JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
     const ans = j.annees_experience ? ` (${j.annees_experience} ans d'expérience)` : "";
     return {
@@ -163,7 +166,7 @@ Renvoie un JSON avec les clés :
       profil: j.profil === "Professionnel expérimenté" ? `${j.profil}${ans}` : (j.profil ?? "À préciser"),
       resume: j.resume ?? "",
     };
-  } catch { return null; }
+  } catch (e) { console.error("Claude", (e as Error).message); return null; }
 }
 
 function analyserCandidat(corps: string, objet: string) {
