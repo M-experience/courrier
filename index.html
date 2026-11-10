@@ -10,6 +10,7 @@
     --accent: #2f6fb3; --survol: #eef2f8; --sel: #e2ebf6;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; color: var(--texte); background: var(--fond); height: 100vh; display: flex; flex-direction: column; }
   header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--ligne); background: var(--panneau); }
   header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
@@ -81,6 +82,7 @@
 const API = "https://gcghlwjuekhbueljpldk.supabase.co/functions/v1";
 const RETOUR = location.origin + location.pathname;
 const $ = (s) => document.querySelector(s);
+const dec = (s) => { const t = document.createElement("textarea"); t.innerHTML = s ?? ""; return t.value; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 // Couleur de la « casquette » selon l'adresse de réception
@@ -232,7 +234,7 @@ function dessinerListe() {
     return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.id ? "sel" : ""}" draggable="true" data-i="${i}">
       <div class="l1"><span class="de">${esc(nomExp(m.expediteur))}</span><span class="date">${dateCourte(m.date)}</span></div>
       <div class="obj">${id ? `<span class="etiq" style="background:${id.coul}">${id.nom}</span>` : ""}${p ? `<span class="etiq" style="background:${esc(p.couleur)}">${esc(p.nom)}</span>` : ""}${esc(m.objet || "(sans objet)")}</div>
-      <div class="ext">${esc(m.extrait)}</div></div>`;
+      <div class="ext">${esc(dec(m.extrait))}</div></div>`;
   }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de messages</button></div>` : "");
   for (const e of document.querySelectorAll(".msg")) {
     const m = etat.messages[e.dataset.i];
