@@ -43,7 +43,7 @@ async function setParam(cle: string, valeur: string) {
   await db.from("parametres").upsert({ cle, valeur });
 }
 
-const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Résumé de la demande", "E-mail", "Lien Gmail"];
+const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Profil", "Résumé de la demande", "E-mail", "Lien Gmail"];
 
 // Crée le Google Sheet de suivi (dans le dossier Drive indiqué) à la première utilisation.
 async function fichierSheet(compte: string, nom: string, dossier?: string) {
@@ -83,11 +83,49 @@ function nomPrenom(nomComplet: string) {
   return { prenom: p[0], nom: p.slice(1).join(" ") };
 }
 
+function formationVisee(objet: string, corps: string) {
+  // L'objet prime : il dit le plus souvent ce que vise le candidat.
+  const o = norm(objet), t = norm(`${objet}\n${corps}`);
+  const cherche = (re: RegExp) => re.test(o) || re.test(t);
+  const certif = cherche(/certificat|cs3600|\buxi\b|service design|design de service|cce24[789]/);
+  // Dans l'objet, le premier niveau cité est celui visé (« Admission en M2 CIME – M1 Journalisme »).
+  const posM1 = o.search(/master ?1|\bm1\b|premiere annee/), posM2 = o.search(/master ?2|\bm2\b|deuxieme annee/);
+  let m1: boolean, m2: boolean;
+  if (posM1 >= 0 || posM2 >= 0) {
+    m1 = posM1 >= 0 && (posM2 < 0 || posM1 < posM2);
+    m2 = !m1;
+  } else {
+    m2 = /master ?2|\bm2\b|deuxieme annee de master|directement en (deuxieme|m2)|admission directe/.test(t);
+    m1 = !m2 && /master ?1|\bm1\b|premiere annee de master/.test(t);
+  }
+  const cime = cherche(/\bcime\b|communication,? innovation|mediation/);
+  const tnr = cherche(/transition numerique|co-?design|codesign|numerique responsable|mr05901|1604785/) || (/numerique2/.test(o) && !cime);
+  const parcours = cime && !tnr ? "CIME" : tnr && !cime ? "Transition numérique & co-design" : cime && tnr ? "CIME ou Transition numérique" : "parcours non précisé";
+  const niveau = m1 ? "M1" : m2 ? "M2" : "Master (niveau non précisé)";
+  const master = `${niveau} ${parcours}`;
+  if (certif && !m1 && !m2 && !/master/.test(t)) return "Certificat UX (CS3600A)";
+  if (certif) return `Certificat UX (CS3600A) et/ou ${master}`;
+  return master;
+}
+
+function profil(corps: string, objet: string) {
+  const t = norm(`${objet}\n${corps}`);
+  const annees = [...t.matchAll(/(\d{1,2})\s*(?:ans|annees) d.experience/g)].map((m) => Number(m[1]));
+  const maxAns = annees.length ? Math.max(...annees) : 0;
+  let pro = 0, init = 0;
+  if (maxAns >= 3) pro += 3;
+  if (/depuis (de nombreuses|plusieurs|plus de \d+|\d+) annees|depuis \d+ ans|nombreuses annees/.test(t)) pro += 2;
+  for (const re of [/directeur|directrice|responsable (de|du|des)|manager|chef de projet|cheffe de projet|consultant|freelance|independant|entrepreneur/, /salarie|en poste|ma carriere|mon parcours professionnel|experience professionnelle/, /reconversion|evolution professionnelle|formation continue|\bcpf\b|\bvapp\b|\bvae\b/]) if (re.test(t)) pro += 2;
+  for (const re of [/\betudiant|\betudiante|actuellement en (l3|licence|m1|master|bachelor)/, /licence|bachelor|\bl3\b|bac ?\+ ?3/, /je termine|en cours de (licence|master)|annee universitaire|stage de fin/, /diplome(e)? (en|de) 202[4-7]|promotion 202[5-7]/, /alternance|contrat d.apprentissage/]) if (re.test(t)) init += 1.5;
+  const detail = maxAns ? ` (${maxAns} ans d'expérience)` : "";
+  if (pro >= 3 && pro > init) return `Professionnel expérimenté${detail}`;
+  if (init > pro) return "Formation initiale (étudiant)";
+  return pro > 0 ? `Profil mixte, à préciser${detail}` : "À préciser";
+}
+
 function analyserCandidat(corps: string, objet: string) {
   const t = norm(`${objet}\n${corps}`);
-  const certif = /certificat|design ux|\bux\b|\buxi\b|cs3600|service design|cce24[789]/.test(t);
-  const master = /master|\bm2\b/.test(t);
-  const formation = certif && !master ? "Certificat Design UX (CS3600A)" : certif ? "Certificat UX et/ou M2" : "M2 Transition numérique";
+  const formation = formationVisee(objet, corps);
   const q: string[] = [];
   if (/directement en (deuxieme annee|m2)|admission directe|niveau avance|en m2/.test(t)) q.push("admission directe en M2");
   if (/vapp|vae|validation d.acquis|equivalence/.test(t)) q.push("validation des acquis / équivalence");
@@ -96,10 +134,40 @@ function analyserCandidat(corps: string, objet: string) {
   if (/alternance|apprentissage|professionnalisation/.test(t)) q.push("alternance");
   if (/bourse|financ|exoner/.test(t)) q.push("financement / bourses");
   if (/etranger|nationalite|visa|campus france|hors de l.union|extra.?communautaire/.test(t)) q.push("candidat international");
-  if (/formation continue|salarie|cpf|reconversion|directeur|evolution professionnelle/.test(t)) q.push("profil formation continue");
   if (/echanger|rendez.vous|entretien|appel/.test(t)) q.push("souhaite un échange");
   const resume = q.length ? `Demande d'informations : ${q.join(" ; ")}.` : "Demande d'informations sur la formation.";
-  return { formation, questions: q.join(", "), resume };
+  return { formation, profil: profil(corps, objet), questions: q.join(", "), resume };
+}
+
+function ligneSheet(np: { nom: string; prenom: string }, date: Date, a: any, email: string, lien: string) {
+  return [np.nom, np.prenom, date.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }), a.formation, a.profil, a.resume,
+    email, `=HYPERLINK("${lien}";"Ouvrir le mail")`];
+}
+
+// Réécrit tout le Sheet à partir des messages déjà classés par une règle (après un changement de colonnes).
+async function reconstruire(compte: string, r: any) {
+  const action = (r.actions ?? []).find((x: any) => x.type === "sheet");
+  if (!action) return 0;
+  const sid = await fichierSheet(compte, action.fichier, action.dossier);
+  const { data: msgs } = await db.from("messages").select("id, thread_id").eq("traite_par", r.id).order("date_reception");
+  const lignes: any[] = [];
+  for (const x of msgs ?? []) {
+    const m = await google(compte, `${GM}/messages/${x.id}?format=full`);
+    const h = m.payload?.headers ?? [];
+    const de = entete(h, "From");
+    const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim();
+    const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+    const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
+    lignes.push(ligneSheet(nomPrenom(nom), new Date(Number(m.internalDate)), analyserCandidat(texte(m.payload), entete(h, "Subject")), email, lien));
+  }
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
+  await google(compte, `${base}/Candidats!A1:Z10000:clear`, { method: "POST" });
+  await google(compte, `${base}/Candidats!A1?valueInputOption=USER_ENTERED`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [ENTETES_SHEET, ...lignes] }),
+  });
+  return lignes.length;
 }
 
 Deno.serve(async (req) => {
@@ -113,6 +181,11 @@ Deno.serve(async (req) => {
   const compte = comptes?.[0]?.email;
   if (!compte) return json({ erreur: "aucun compte principal connecté" }, 400);
   const requeteForcee = u.searchParams.get("q");
+  if (u.searchParams.has("reconstruire")) {
+    const res: Record<string, number> = {};
+    for (const r of regles ?? []) res[r.nom] = await reconstruire(compte, r);
+    return json({ reconstruit: res });
+  }
 
   const rapport: any[] = [];
   for (const r of regles ?? []) {
@@ -168,10 +241,7 @@ Deno.serve(async (req) => {
             await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Candidats!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ values: [[
-                np.nom, np.prenom, date.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }), a.formation, a.resume,
-                email, `=HYPERLINK("${lien}";"Ouvrir le mail")`,
-              ]] }),
+              body: JSON.stringify({ values: [ligneSheet(np, date, a, email, lien)] }),
             });
             fait.push("ligne ajoutée au Sheet");
           } else if (action.type === "brouillon") {
