@@ -81,16 +81,22 @@ Deno.serve(async (req) => {
   const { data: flux } = await db.from("suivi_flux").select("*").eq("actif", true);
   const rapport: Record<string, unknown> = {};
   for (const f of flux ?? []) {
-    // Conversations du flux (jusqu'à 150), avec leur historyId pour repérer celles qui ont changé.
+    // Conversations du flux dans chaque boîte connectée (jusqu'à 150 par boîte),
+    // avec leur historyId pour repérer celles qui ont changé.
+    const voulus: string[] = (f.comptes?.length ? f.comptes : [f.compte]).map((x: string) => x.toLowerCase());
+    const { data: connectes } = await db.from("comptes").select("email").in("email", voulus);
+    const boites = (connectes ?? []).map((c) => c.email);
     const fils: any[] = [];
-    let page: string | undefined;
-    do {
-      const q = new URLSearchParams({ q: f.requete, maxResults: "100" });
-      if (page) q.set("pageToken", page);
-      const r = await google(f.compte, `${GM}/threads?${q}`);
-      fils.push(...(r.threads ?? []));
-      page = r.nextPageToken;
-    } while (page && fils.length < 150);
+    for (const boite of boites) {
+      let page: string | undefined, n = 0;
+      do {
+        const q = new URLSearchParams({ q: f.requete, maxResults: "100" });
+        if (page) q.set("pageToken", page);
+        const r = await google(boite, `${GM}/threads?${q}`);
+        for (const t of r.threads ?? []) { fils.push({ ...t, compte: boite }); n++; }
+        page = r.nextPageToken;
+      } while (page && n < 150);
+    }
 
     const { data: connus } = await db.from("suivi_fils").select("thread_id, history_id, objet, dernier_message_at, dernier_expediteur, extrait, analyse_at").eq("flux", f.id);
     const idx = new Map((connus ?? []).map((c) => [c.thread_id, c]));
@@ -105,14 +111,14 @@ Deno.serve(async (req) => {
 
     let n = 0;
     await parLots(aTraiter, 4, async (t) => {
-      const fil = await google(f.compte, `${GM}/threads/${t.id}?format=full`);
+      const fil = await google(t.compte, `${GM}/threads/${t.id}?format=full`);
       const msgs = (fil.messages ?? []).filter((m: any) => !(m.labelIds ?? []).includes("DRAFT"));
       if (!msgs.length) return;
       const dernier = msgs[msgs.length - 1];
       const h = dernier.payload?.headers ?? [];
       const a = await analyser(f.contexte ?? "", fil, autres);
       await db.from("suivi_fils").upsert({
-        flux: f.id, thread_id: t.id, compte: f.compte,
+        flux: f.id, thread_id: t.id, compte: t.compte,
         objet: entete(msgs[0].payload?.headers ?? [], "Subject"),
         dernier_message_id: dernier.id,
         dernier_message_at: new Date(Number(dernier.internalDate)).toISOString(),
@@ -124,7 +130,7 @@ Deno.serve(async (req) => {
       });
       n++;
     });
-    rapport[f.id] = { conversations: fils.length, analysees: n, restantes: fils.filter((t) => idx.get(t.id)?.history_id !== t.historyId).length - n };
+    rapport[f.id] = { boites, conversations: fils.length, analysees: n, restantes: fils.filter((t) => idx.get(t.id)?.history_id !== t.historyId).length - n };
   }
   return json(rapport);
 });
