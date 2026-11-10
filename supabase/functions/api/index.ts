@@ -313,6 +313,15 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     return { ok: true };
   },
 
+  // Purge des cartes closes dont le dernier message date de plus de 30 jours.
+  async suivi_purger(b) {
+    const limite = new Date(Date.now() - 30 * 86400000).toISOString();
+    const { data: lignes } = await db.from("suivi_fils").select("thread_id, etat, etat_manuel").eq("flux", b.flux).lt("dernier_message_at", limite);
+    const ids = (lignes ?? []).filter((x) => (x.etat_manuel ?? x.etat) === "clos").map((x) => x.thread_id);
+    if (ids.length) await db.from("suivi_fils").delete().eq("flux", b.flux).in("thread_id", ids);
+    return { supprimees: ids.length };
+  },
+
   // Fichiers de suivi (Google Sheets) alimentés par les règles.
   async fichiers() {
     const { data } = await db.from("parametres").select("cle, valeur").like("cle", "sheet:%");
