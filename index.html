@@ -364,7 +364,8 @@ async function lire(m) {
     zone.innerHTML = `
       <h2>${esc(d.messages[0]?.objet || "(sans objet)")}</h2>
       <div class="barre"><select id="classer">${opts}</select>
-        <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a></div>
+        <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a>
+        <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a></div>
       ${d.messages.map((x, i) => `
         <div class="carte${x.brouillon ? " brouillon" : ""}" data-c="${i}">
           <div class="tete">${x.brouillon ? `<span class="tag">Brouillon</span>` : ""}<b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
