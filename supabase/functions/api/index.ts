@@ -174,6 +174,13 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     return { ok: true, id: r.id };
   },
 
+  // Suppression d'un brouillon, à la demande de l'utilisateur.
+  async supprimer_brouillon(b) {
+    await google(b.compte, `${GM}/drafts/${b.draft_id}`, { method: "DELETE" });
+    await db.from("journal").insert({ type: "brouillon_supprime", details: { draft_id: b.draft_id, depuis: "Courrier" } });
+    return { ok: true };
+  },
+
   // Fichiers de suivi (Google Sheets) alimentés par les règles.
   async fichiers() {
     const { data } = await db.from("parametres").select("cle, valeur").like("cle", "sheet:%");

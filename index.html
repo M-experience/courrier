@@ -377,6 +377,7 @@ async function lire(m) {
             ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
               <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
               <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${x.id}" target="_blank" rel="noopener"><button>Modifier dans Mimestream</button></a>
+              <button data-supprimer="${esc(x.draft_id)}" style="margin-left:auto">Supprimer ce brouillon</button>
             </div>` : ""}
           </div>
         </div>`).join("")}`;
@@ -391,6 +392,12 @@ async function lire(m) {
       const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    for (const b of zone.querySelectorAll("[data-supprimer]")) b.onclick = async () => {
+      if (!confirm("Supprimer définitivement ce brouillon ?")) return;
+      b.disabled = true;
+      try { await api("supprimer_brouillon", { compte: m.compte, draft_id: b.dataset.supprimer }); toast("Brouillon supprimé"); lire(m); }
+      catch (er) { toast(er.message); b.disabled = false; }
+    };
     for (const b of zone.querySelectorAll("[data-envoyer]")) b.onclick = async () => {
       const x = d.messages.find((y) => y.draft_id === b.dataset.envoyer);
       if (!confirm(`Envoyer ce brouillon à ${x?.destinataires || "son destinataire"}${x?.cc ? " (copie : " + x.cc + ")" : ""} ?`)) return;
