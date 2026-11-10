@@ -252,6 +252,8 @@ async function formaterSheet(compte: string, sid: string) {
         cell: { userEnteredFormat: { numberFormat: { type: "DATE", pattern: "dd/mm/yyyy" } } }, fields: "userEnteredFormat.numberFormat" } },
       { repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
         cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: "userEnteredFormat.textFormat.bold" } },
+      { repeatCell: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 2000 },
+        cell: { userEnteredFormat: { textFormat: { bold: false } } }, fields: "userEnteredFormat.textFormat.bold" } },
       { repeatCell: { range: { sheetId: 0, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 },
         cell: { userEnteredFormat: { wrapStrategy: "WRAP" } }, fields: "userEnteredFormat.wrapStrategy" } },
       { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 3, endIndex: 4 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
