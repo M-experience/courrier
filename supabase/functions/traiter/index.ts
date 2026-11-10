@@ -43,7 +43,7 @@ async function setParam(cle: string, valeur: string) {
   await db.from("parametres").upsert({ cle, valeur });
 }
 
-const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Profil", "Résumé de la demande", "E-mail", "Lien Gmail"];
+const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Profil", "Résumé de la demande", "E-mail", "Lien Gmail", "Avis après entretien"];
 
 // Crée le Google Sheet de suivi (dans le dossier Drive indiqué) à la première utilisation.
 async function fichierSheet(compte: string, nom: string, dossier?: string) {
@@ -123,6 +123,49 @@ function profil(corps: string, objet: string) {
   return pro > 0 ? `Profil mixte, à préciser${detail}` : "À préciser";
 }
 
+const CLE_CLAUDE = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+const FORMATIONS = ["M1 Transition numérique & co-design", "M2 Transition numérique & co-design", "M1 CIME", "M2 CIME",
+  "Master (niveau non précisé)", "Certificat UX (CS3600A)", "Certificat UX (CS3600A) et/ou M2 Transition numérique & co-design", "Autre"];
+
+// Analyse fine par Claude : formation, profil, résumé, nom et prénom. Renvoie null si indisponible.
+async function analyseClaude(de: string, objet: string, corps: string) {
+  if (!CLE_CLAUDE) return null;
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "x-api-key": CLE_CLAUDE, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-5-5",
+        max_tokens: 500,
+        system: "Tu analyses des demandes d'admission adressées au Master Information-Communication du Cnam (parcours Transition numérique & co-design, et parcours CIME) et au certificat de spécialisation Design UX CS3600A. Réponds uniquement par un objet JSON, sans texte autour.",
+        messages: [{ role: "user", content:
+`Expéditeur : ${de}
+Objet : ${objet}
+Message :
+${corps.slice(0, 6000)}
+
+Renvoie un JSON avec les clés :
+- "nom" et "prenom" du candidat (d'après la signature ou l'expéditeur),
+- "formation" : l'une de ${JSON.stringify(FORMATIONS)},
+- "profil" : "Formation initiale (étudiant)", "Professionnel expérimenté" ou "À préciser",
+- "annees_experience" : nombre ou null,
+- "resume" : une ou deux phrases en français résumant la situation du candidat et ses questions.` }],
+      }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const txt = d.content?.[0]?.text ?? "";
+    const j = JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
+    const ans = j.annees_experience ? ` (${j.annees_experience} ans d'expérience)` : "";
+    return {
+      nom: j.nom ?? "", prenom: j.prenom ?? "",
+      formation: j.formation ?? "Autre",
+      profil: j.profil === "Professionnel expérimenté" ? `${j.profil}${ans}` : (j.profil ?? "À préciser"),
+      resume: j.resume ?? "",
+    };
+  } catch { return null; }
+}
+
 function analyserCandidat(corps: string, objet: string) {
   const t = norm(`${objet}\n${corps}`);
   const formation = formationVisee(objet, corps);
@@ -139,9 +182,22 @@ function analyserCandidat(corps: string, objet: string) {
   return { formation, profil: profil(corps, objet), questions: q.join(", "), resume };
 }
 
+function isoParis(date: Date) {
+  return date.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }); // AAAA-MM-JJ
+}
 function ligneSheet(np: { nom: string; prenom: string }, date: Date, a: any, email: string, lien: string) {
-  return [np.nom, np.prenom, date.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }), a.formation, a.profil, a.resume,
+  return [np.nom, np.prenom, isoParis(date), a.formation, a.profil, a.resume,
     email, `=HYPERLINK("${lien}";"Ouvrir le mail")`];
+}
+
+// Analyse complète d'un message : Claude si disponible, sinon heuristiques.
+async function analyser(de: string, objet: string, corps: string) {
+  const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim().toLowerCase();
+  const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+  const h = analyserCandidat(corps, objet);
+  const c = await analyseClaude(de, objet, corps);
+  const np = c && (c.nom || c.prenom) ? { nom: c.nom, prenom: c.prenom } : nomPrenom(nom);
+  return { email, np, a: c ? { ...h, formation: c.formation, profil: c.profil, resume: c.resume || h.resume } : h, parClaude: !!c };
 }
 
 // Réécrit tout le Sheet à partir des messages déjà classés par une règle (après un changement de colonnes).
@@ -149,25 +205,54 @@ async function reconstruire(compte: string, r: any) {
   const action = (r.actions ?? []).find((x: any) => x.type === "sheet");
   if (!action) return 0;
   const sid = await fichierSheet(compte, action.fichier, action.dossier);
-  const { data: msgs } = await db.from("messages").select("id, thread_id").eq("traite_par", r.id).order("date_reception");
-  const lignes: any[] = [];
+  const { data: msgs } = await db.from("messages").select("id").eq("traite_par", r.id).order("date_reception");
+  const parEmail = new Map<string, { ligne: any[]; n: number; dates: string[] }>();
   for (const x of msgs ?? []) {
     const m = await google(compte, `${GM}/messages/${x.id}?format=full`);
     const h = m.payload?.headers ?? [];
-    const de = entete(h, "From");
-    const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim();
-    const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+    const res = await analyser(entete(h, "From"), entete(h, "Subject"), texte(m.payload));
+    const date = new Date(Number(m.internalDate));
     const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
-    lignes.push(ligneSheet(nomPrenom(nom), new Date(Number(m.internalDate)), analyserCandidat(texte(m.payload), entete(h, "Subject")), email, lien));
+    const exist = parEmail.get(res.email);
+    if (!exist) parEmail.set(res.email, { ligne: ligneSheet(res.np, date, res.a, res.email, lien), n: 1, dates: [isoParis(date)] });
+    else { exist.n++; exist.dates.push(isoParis(date)); exist.ligne[5] = `${exist.ligne[5]} | Nouveau message du ${isoParis(date)} : ${res.a.resume}`; }
   }
-  const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
-  await google(compte, `${base}/Candidats!A1:Z10000:clear`, { method: "POST" });
-  await google(compte, `${base}/Candidats!A1?valueInputOption=USER_ENTERED`, {
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}`;
+  // Les avis saisis à la main (colonne I) sont conservés, rattachés à l'e-mail du candidat.
+  const ancien = await google(compte, `${base}/values/Candidats!A1:I10000`);
+  const avis = new Map<string, string>();
+  for (const l of (ancien.values ?? []).slice(1)) if (l[8]) avis.set((l[6] ?? "").toLowerCase(), l[8]);
+  const lignes = [...parEmail.values()].map((v) => [...v.ligne, avis.get(String(v.ligne[6]).toLowerCase()) ?? ""]);
+  await google(compte, `${base}/values/Candidats!A1:I10000:clear`, { method: "POST" });
+  await google(compte, `${base}/values/Candidats!A1?valueInputOption=USER_ENTERED`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ values: [ENTETES_SHEET, ...lignes] }),
   });
+  await formaterSheet(compte, sid);
   return lignes.length;
+}
+
+async function formaterSheet(compte: string, sid: string) {
+  await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}:batchUpdate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requests: [
+      { repeatCell: { range: { sheetId: 0, startRowIndex: 1, startColumnIndex: 2, endColumnIndex: 3 },
+        cell: { userEnteredFormat: { numberFormat: { type: "DATE", pattern: "dd/mm/yyyy" } } }, fields: "userEnteredFormat.numberFormat" } },
+      { repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
+        cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: "userEnteredFormat.textFormat.bold" } },
+      { repeatCell: { range: { sheetId: 0, startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 },
+        cell: { userEnteredFormat: { wrapStrategy: "WRAP" } }, fields: "userEnteredFormat.wrapStrategy" } },
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 3, endIndex: 4 }, properties: { pixelSize: 300 }, fields: "pixelSize" } },
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 4, endIndex: 5 }, properties: { pixelSize: 260 }, fields: "pixelSize" } },
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 5, endIndex: 6 }, properties: { pixelSize: 420 }, fields: "pixelSize" } },
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 8, endIndex: 9 }, properties: { pixelSize: 220 }, fields: "pixelSize" } },
+      { setDataValidation: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: 8, endColumnIndex: 9 },
+        rule: { condition: { type: "ONE_OF_LIST", values: ["Favorable", "Favorable avec réserves", "Défavorable", "Entretien à programmer", "Sans suite"].map((v) => ({ userEnteredValue: v })) },
+          strict: false, showCustomUi: true } } },
+    ] }),
+  });
 }
 
 Deno.serve(async (req) => {
@@ -218,13 +303,11 @@ Deno.serve(async (req) => {
       if (!DEMANDE.test(t)) continue;
 
       const de = entete(h, "From");
-      const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim();
-      const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+      const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim();
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
-      const a = analyserCandidat(corps, objet);
-      const np = nomPrenom(nom);
-      const fait: string[] = [];
+      const { email, np, a, parClaude } = simulation ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false } : await analyser(de, objet, corps);
+      const fait: string[] = parClaude ? ["analysé par Claude"] : [];
 
       for (const action of r.actions ?? []) {
         if (simulation) { fait.push(`(simulation) ${action.type}`); continue; }
@@ -238,14 +321,30 @@ Deno.serve(async (req) => {
             fait.push("classé");
           } else if (action.type === "sheet") {
             const sid = await fichierSheet(compte, action.fichier, action.dossier);
-            await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Candidats!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ values: [ligneSheet(np, date, a, email, lien)] }),
-            });
-            fait.push("ligne ajoutée au Sheet");
+            const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
+            const col = await google(compte, `${base}/Candidats!G1:G10000`);
+            const k = (col.values ?? []).findIndex((v: string[]) => (v[0] ?? "").toLowerCase() === email);
+            if (k > 0) {
+              const cell = await google(compte, `${base}/Candidats!F${k + 1}`);
+              const avant = cell.values?.[0]?.[0] ?? "";
+              await google(compte, `${base}/Candidats!F${k + 1}?valueInputOption=RAW`, {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ values: [[`${avant} | Nouveau message du ${isoParis(date)} : ${a.resume}`]] }),
+              });
+              fait.push("ligne existante complétée (même candidat)");
+            } else {
+              await google(compte, `${base}/Candidats!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ values: [ligneSheet(np, date, a, email, lien)] }),
+              });
+              fait.push("ligne ajoutée au Sheet");
+            }
           } else if (action.type === "brouillon") {
-            const { data: modele } = await db.from("modeles").select("*").eq("usage", action.modele).single();
+            const usage = action.modele ?? (a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou")
+              ? action.modeles?.certificat : action.modeles?.master);
+            const { data: modele } = await db.from("modeles").select("*").eq("usage", usage).maybeSingle();
+            if (!modele || modele.corps.includes("[À COMPLÉTER")) { fait.push("pas de brouillon : modèle de réponse à compléter"); continue; }
             const sujet = (modele.sujet ?? "Re: {objet}").replace("{objet}", objet.replace(/^(re|tr|fwd?)\s*:\s*/i, ""));
             const { data: copies } = await db.from("processus_copies")
               .select("interlocuteurs(nom, email, actif)").eq("processus_id", r.processus_id);
@@ -262,17 +361,17 @@ Deno.serve(async (req) => {
               `In-Reply-To: ${entete(h, "Message-ID")}`,
               `References: ${entete(h, "Message-ID")}`,
               "MIME-Version: 1.0",
-              "Content-Type: text/plain; charset=UTF-8",
+              `Content-Type: text/${modele.format === "html" ? "html" : "plain"}; charset=UTF-8`,
               "Content-Transfer-Encoding: 8bit",
               "",
-              modele.corps,
+              modele.format === "html" ? `<div style="font-family:Arial,sans-serif;font-size:14px">${modele.corps}</div>` : modele.corps,
             ];
             await google(compte, `${GM}/drafts`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ message: { raw: b64url(lignes.join("\r\n")), threadId: m.threadId } }),
             });
-            fait.push("brouillon de réponse créé");
+            fait.push(`brouillon de réponse créé (modèle ${usage})`);
           }
         } catch (e) {
           fait.push(`ERREUR ${action.type} : ${(e as Error).message}`);
