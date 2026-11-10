@@ -376,6 +376,7 @@ async function lire(m) {
             <iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" data-f="${i}"></iframe>
             ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
               <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
+              <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${x.id}" target="_blank" rel="noopener"><button>Modifier dans Mimestream</button></a>
             </div>` : ""}
           </div>
         </div>`).join("")}`;
