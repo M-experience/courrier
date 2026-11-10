@@ -1,4 +1,4 @@
-import { cors, db, google, json } from "../_shared/commun.ts";
+import { cors, db, google, json, parLots } from "../_shared/commun.ts";
 
 const GM = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -80,7 +80,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     if (b.pageToken) p.set("pageToken", b.pageToken);
     const r = await google(compte, `${GM}/threads?${p}`);
     const ids: string[] = (r.threads ?? []).map((t: any) => t.id);
-    const fils = await Promise.all(ids.map(async (id) => {
+    const fils = await parLots(ids, 8, async (id) => {
       const t = await google(compte,
         `${GM}/threads/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`);
       const msgs = t.messages ?? [];
@@ -109,7 +109,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
         suivi: labels.has("STARRED"),
         important: labels.has("IMPORTANT"),
       };
-    }));
+    });
     const { data: classes } = await db.from("messages").select("thread_id, processus_id").in("thread_id", ids);
     const idx = Object.fromEntries((classes ?? []).map((c) => [c.thread_id, c.processus_id]));
     return {
@@ -122,10 +122,10 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
   async compteurs_onglets(b) {
     const cats = ["primary", "promotions", "social", "updates", "forums"];
     const res: Record<string, number> = {};
-    await Promise.all(cats.map(async (c) => {
+    await parLots(cats, 2, async (c) => {
       const r = await google(b.compte, `${GM}/threads?maxResults=100&q=${encodeURIComponent(`in:inbox category:${c} is:unread`)}`);
       res[c] = (r.threads ?? []).length;
-    }));
+    });
     return res;
   },
 

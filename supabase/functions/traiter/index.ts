@@ -1,0 +1,218 @@
+import { db, google, json } from "../_shared/commun.ts";
+
+// Traitement automatique : applique les règles actives aux nouveaux messages.
+// Appelé toutes les 10 minutes par pg_cron (en-tête x-cle = parametres.cle_cron),
+// ou manuellement avec ?simulation=1 pour voir ce qui serait fait sans rien écrire.
+
+const GM = "https://gmail.googleapis.com/gmail/v1/users/me";
+const DEMANDE = /je me permets|je souhaite|je souhaiterais|serait-il possible|j.aimerais|je voudrais|pourriez-vous|je vous contacte|je vous ecris|\?/;
+const CONTEXTE = ["candidat", "candidature", "admission", "intégrer", "integrer", "inscription", "inscrire", "rentrée", "rentree", "session", "formation continue", "vapp", "vae", "suivre", "parcours"];
+
+function entete(h: any[] = [], nom: string) {
+  return h.find((x) => x.name.toLowerCase() === nom.toLowerCase())?.value ?? "";
+}
+function decoder(b64: string) {
+  const bin = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
+  return new TextDecoder("utf-8").decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+}
+function texte(part: any): string {
+  if (!part) return "";
+  let t = "";
+  if (part.mimeType === "text/plain" && part.body?.data) t += decoder(part.body.data);
+  for (const p of part.parts ?? []) t += "\n" + texte(p);
+  if (!t && part.mimeType === "text/html" && part.body?.data) t = decoder(part.body.data).replace(/<[^>]+>/g, " ");
+  return t;
+}
+function norm(s: string) {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+function b64url(s: string) {
+  const bytes = new TextEncoder().encode(s);
+  let bin = ""; for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function encoderEntete(s: string) {
+  return /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(s)))}?=`;
+}
+
+async function param(cle: string) {
+  const { data } = await db.from("parametres").select("valeur").eq("cle", cle).maybeSingle();
+  return data?.valeur ?? null;
+}
+async function setParam(cle: string, valeur: string) {
+  await db.from("parametres").upsert({ cle, valeur });
+}
+
+const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Résumé de la demande", "E-mail", "Lien Gmail"];
+
+// Crée le Google Sheet de suivi (dans le dossier Drive indiqué) à la première utilisation.
+async function fichierSheet(compte: string, nom: string, dossier?: string) {
+  const cle = `sheet:${nom}`;
+  const existant = await param(cle);
+  if (existant) return existant;
+  const f = await google(compte, "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: nom, mimeType: "application/vnd.google-apps.spreadsheet", ...(dossier ? { parents: [dossier] } : {}) }),
+  });
+  await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${f.id}:batchUpdate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requests: [
+      { updateSheetProperties: { properties: { sheetId: 0, title: "Candidats", gridProperties: { frozenRowCount: 1 } }, fields: "title,gridProperties.frozenRowCount" } },
+      { repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true } } }, fields: "userEnteredFormat.textFormat.bold" } },
+    ] }),
+  });
+  await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${f.id}/values/Candidats!A1:append?valueInputOption=RAW`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [ENTETES_SHEET] }),
+  });
+  await setParam(cle, f.id);
+  return f.id as string;
+}
+
+// Sépare nom et prénom à partir de l'en-tête From (« Prénom Nom » ou « NOM Prénom »).
+function nomPrenom(nomComplet: string) {
+  const p = nomComplet.trim().split(/\s+/);
+  if (p.length < 2) return { nom: nomComplet, prenom: "" };
+  const majuscules = p.filter((x) => x.length > 1 && x === x.toUpperCase() && /[A-Z]/.test(x));
+  if (majuscules.length && majuscules.length < p.length) {
+    return { nom: majuscules.join(" "), prenom: p.filter((x) => !majuscules.includes(x)).join(" ") };
+  }
+  return { prenom: p[0], nom: p.slice(1).join(" ") };
+}
+
+function analyserCandidat(corps: string, objet: string) {
+  const t = norm(`${objet}\n${corps}`);
+  const certif = /certificat|design ux|\bux\b|\buxi\b|cs3600|service design|cce24[789]/.test(t);
+  const master = /master|\bm2\b/.test(t);
+  const formation = certif && !master ? "Certificat Design UX (CS3600A)" : certif ? "Certificat UX et/ou M2" : "M2 Transition numérique";
+  const q: string[] = [];
+  if (/directement en (deuxieme annee|m2)|admission directe|niveau avance|en m2/.test(t)) q.push("admission directe en M2");
+  if (/vapp|vae|validation d.acquis|equivalence/.test(t)) q.push("validation des acquis / équivalence");
+  if (/cce24[789]|\bue\b|unites? d.enseignement/.test(t)) q.push("UE suivies à la carte");
+  if (/prochaine session|session/.test(t)) q.push("date de la prochaine session");
+  if (/alternance|apprentissage|professionnalisation/.test(t)) q.push("alternance");
+  if (/bourse|financ|exoner/.test(t)) q.push("financement / bourses");
+  if (/etranger|nationalite|visa|campus france|hors de l.union|extra.?communautaire/.test(t)) q.push("candidat international");
+  if (/formation continue|salarie|cpf|reconversion|directeur|evolution professionnelle/.test(t)) q.push("profil formation continue");
+  if (/echanger|rendez.vous|entretien|appel/.test(t)) q.push("souhaite un échange");
+  const resume = q.length ? `Demande d'informations : ${q.join(" ; ")}.` : "Demande d'informations sur la formation.";
+  return { formation, questions: q.join(", "), resume };
+}
+
+Deno.serve(async (req) => {
+  const u = new URL(req.url);
+  const simulation = u.searchParams.has("simulation");
+  const cle = req.headers.get("x-cle") ?? u.searchParams.get("cle");
+  if (cle !== await param("cle_cron")) return json({ erreur: "clé" }, 401);
+
+  const { data: regles } = await db.from("regles").select("*").eq("actif", true).order("priorite");
+  const { data: comptes } = await db.from("comptes").select("email, role").eq("role", "principal");
+  const compte = comptes?.[0]?.email;
+  if (!compte) return json({ erreur: "aucun compte principal connecté" }, 400);
+  const requeteForcee = u.searchParams.get("q");
+
+  const rapport: any[] = [];
+  for (const r of regles ?? []) {
+    const c = r.conditions ?? {};
+    const liste = await google(compte, `${GM}/messages?maxResults=50&q=${encodeURIComponent(requeteForcee ?? c.requete_gmail ?? "in:inbox newer_than:1d")}`);
+    const ids: string[] = (liste.messages ?? []).map((m: any) => m.id);
+    if (!ids.length) continue;
+    const { data: deja } = await db.from("messages").select("id").in("id", ids).not("traite_par", "is", null);
+    const vus = new Set((deja ?? []).map((x) => x.id));
+
+    for (const id of ids.filter((i) => !vus.has(i))) {
+      const m = await google(compte, `${GM}/messages/${id}?format=full`);
+      const h = m.payload?.headers ?? [];
+      const objet = entete(h, "Subject");
+      const corps = texte(m.payload);
+      const t = norm(`${objet}\n${corps}`);
+
+      if (c.premier_message_seulement) {
+        const fil = await google(compte, `${GM}/threads/${m.threadId}?format=minimal`);
+        if ((fil.messages ?? []).length > 1 && fil.messages[0].id !== id) continue;
+      }
+      // Écarte les envois de masse (lettres d'information, notifications), sauf la liste numerique2.0.
+      const listId = norm(entete(h, "List-Id") + entete(h, "List-Unsubscribe"));
+      const deNorm = norm(entete(h, "From"));
+      if (listId && !listId.includes("numerique2")) continue;
+      if (/no-?reply|newsletter|notification|mailer|zoom\.us|legavote/.test(deNorm)) continue;
+      // Mot-clé en mot entier + contexte de candidature + forme de demande personnelle.
+      const motCle = (c.mots_cles ?? []).find((k: string) => new RegExp(`(^|[^a-z0-9])${norm(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(t));
+      if (!motCle || !CONTEXTE.some((k) => t.includes(norm(k)))) continue;
+      if (!DEMANDE.test(t)) continue;
+
+      const de = entete(h, "From");
+      const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim();
+      const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+      const date = new Date(Number(m.internalDate));
+      const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
+      const a = analyserCandidat(corps, objet);
+      const np = nomPrenom(nom);
+      const fait: string[] = [];
+
+      for (const action of r.actions ?? []) {
+        if (simulation) { fait.push(`(simulation) ${action.type}`); continue; }
+        try {
+          if (action.type === "classer") {
+            await db.from("messages").upsert({
+              id, compte_email: compte, thread_id: m.threadId, expediteur: de, destinataires: entete(h, "To"),
+              objet, extrait: m.snippet, date_reception: date.toISOString(), labels: m.labelIds ?? [],
+              processus_id: r.processus_id, statut: "nouveau", traite_par: r.id, maj_at: new Date().toISOString(),
+            });
+            fait.push("classé");
+          } else if (action.type === "sheet") {
+            const sid = await fichierSheet(compte, action.fichier, action.dossier);
+            await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Candidats!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ values: [[
+                np.nom, np.prenom, date.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }), a.formation, a.resume,
+                email, `=HYPERLINK("${lien}";"Ouvrir le mail")`,
+              ]] }),
+            });
+            fait.push("ligne ajoutée au Sheet");
+          } else if (action.type === "brouillon") {
+            const { data: modele } = await db.from("modeles").select("*").eq("usage", action.modele).single();
+            const sujet = (modele.sujet ?? "Re: {objet}").replace("{objet}", objet.replace(/^(re|tr|fwd?)\s*:\s*/i, ""));
+            const { data: copies } = await db.from("processus_copies")
+              .select("interlocuteurs(nom, email, actif)").eq("processus_id", r.processus_id);
+            const cc = [
+              ...(copies ?? []).map((x: any) => x.interlocuteurs).filter((i: any) => i?.actif)
+                .map((i: any) => `${encoderEntete(i.nom)} <${i.email}>`),
+              ...(action.cc ? [action.cc] : []),
+            ];
+            const lignes = [
+              `From: ${modele.identite}`,
+              `To: ${de}`,
+              ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
+              `Subject: ${encoderEntete(sujet)}`,
+              `In-Reply-To: ${entete(h, "Message-ID")}`,
+              `References: ${entete(h, "Message-ID")}`,
+              "MIME-Version: 1.0",
+              "Content-Type: text/plain; charset=UTF-8",
+              "Content-Transfer-Encoding: 8bit",
+              "",
+              modele.corps,
+            ];
+            await google(compte, `${GM}/drafts`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: { raw: b64url(lignes.join("\r\n")), threadId: m.threadId } }),
+            });
+            fait.push("brouillon de réponse créé");
+          }
+        } catch (e) {
+          fait.push(`ERREUR ${action.type} : ${(e as Error).message}`);
+        }
+      }
+      if (!simulation) {
+        await db.from("journal").insert({ type: "regle", message_id: id, details: { regle: r.nom, mot_cle: motCle, actions: fait } });
+      }
+      rapport.push({ regle: r.nom, objet, de: nom, mot_cle: motCle, ...a, actions: fait });
+    }
+  }
+  return json({ traites: rapport.length, rapport });
+});

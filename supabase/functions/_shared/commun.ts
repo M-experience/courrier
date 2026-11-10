@@ -66,15 +66,29 @@ export async function jetonAcces(email: string): Promise<string> {
   return t.access_token;
 }
 
-export async function google(email: string, url: string, init: RequestInit = {}) {
+export async function google(email: string, url: string, init: RequestInit = {}, essai = 0): Promise<any> {
   const token = await jetonAcces(email);
   const r = await fetch(url, {
     ...init,
     headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` },
   });
+  if ((r.status === 429 || r.status >= 500) && essai < 4) {
+    await new Promise((ok) => setTimeout(ok, 500 * 2 ** essai + Math.random() * 300));
+    return google(email, url, init, essai + 1);
+  }
   if (!r.ok) {
     const txt = await r.text();
     throw new Error(`Google ${r.status} : ${txt.slice(0, 300)}`);
   }
   return r.status === 204 ? null : r.json();
+}
+
+/** Exécute des tâches avec un nombre limité d'appels simultanés (quota Gmail). */
+export async function parLots<T, R>(items: T[], n: number, f: (x: T) => Promise<R>): Promise<R[]> {
+  const res: R[] = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const k = i++; res[k] = await f(items[k]); }
+  }));
+  return res;
 }
