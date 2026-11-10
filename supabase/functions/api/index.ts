@@ -72,7 +72,12 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     for (const m of compteurs ?? []) if (m.processus_id) nb[m.processus_id] = (nb[m.processus_id] ?? 0) + 1;
     const { data: signatures } = await db.from("signatures").select("id, nom").order("ordre");
     const { data: dropbox_comptes } = await db.from("comptes_dropbox").select("email, nom");
-    return { session: s.email, comptes, processus, compteurs: nb, signatures, dropbox: dropbox_comptes ?? [] };
+    // Tableaux de suivi (Kanban) rattachés à une rubrique, avec le nombre de dossiers « à traiter ».
+    const { data: flux } = await db.from("suivi_flux").select("id, nom, processus_id").eq("actif", true);
+    const { data: fils } = await db.from("suivi_fils").select("flux, etat, etat_manuel");
+    const suivis = (flux ?? []).map((f) => ({ ...f,
+      a_traiter: (fils ?? []).filter((x) => x.flux === f.id && (x.etat_manuel ?? x.etat) === "a_traiter").length }));
+    return { session: s.email, comptes, processus, compteurs: nb, signatures, dropbox: dropbox_comptes ?? [], suivis };
   },
 
   // Liste par conversations, comme la boîte de réception Gmail.
@@ -295,6 +300,17 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     await db.from("journal").insert({ type: "rangement_drive", message_id: b.message_id,
       details: { fichier: b.nom, compte: b.drive_compte, dossier: b.dossier_nom, fichier_id: fichierId } });
     return { ok: true, lien };
+  },
+
+  // ---------- Tableaux de suivi (Kanban) ----------
+  async suivi_liste(b) {
+    const { data } = await db.from("suivi_fils").select("*").eq("flux", b.flux).order("dernier_message_at", { ascending: false });
+    return { fils: (data ?? []).map((x) => ({ ...x, etat: x.etat_manuel ?? x.etat ?? "attente_efficience", manuel: !!x.etat_manuel })) };
+  },
+  // Déplacement manuel d'une carte (annulé automatiquement au prochain message de la conversation).
+  async suivi_deplacer(b) {
+    await db.from("suivi_fils").update({ etat_manuel: b.etat }).eq("flux", b.flux).eq("thread_id", b.thread_id);
+    return { ok: true };
   },
 
   // Fichiers de suivi (Google Sheets) alimentés par les règles.

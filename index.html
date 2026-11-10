@@ -79,6 +79,37 @@
   .carte .tag { font-size: 11px; color: #9a5b00; background: #fde7c2; border-radius: 6px; padding: 0 6px; flex: none; }
   .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; }
   .pj button { font-size: 12.5px; padding: 3px 8px; }
+  /* Classeurs repliables de la barre de gauche */
+  nav h2.classeur { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
+  nav h2.classeur:hover { color: var(--texte); }
+  nav h2.classeur .chev { display: inline-block; width: 10px; transition: transform .15s; }
+  nav h2.classeur.replie .chev { transform: rotate(-90deg); }
+  nav h2.classeur .nbc { margin-left: auto; margin-right: 10px; }
+  .alerte { background: #c0392b; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; font-weight: 700; }
+  /* Tableau de suivi (Kanban) */
+  main.kanban { grid-template-columns: 240px 1fr 460px; }
+  .tableau { display: flex; flex-direction: column; height: 100%; }
+  .tableau .entete-t { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--ligne); }
+  .tableau .entete-t h3 { margin: 0; font-size: 15px; flex: 1; }
+  .tableau .entete-t input { width: 200px; padding: 5px 8px; border: 1px solid var(--ligne); border-radius: 8px; font: inherit; }
+  .colonnes { flex: 1; display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); gap: 10px; padding: 10px; overflow: auto; min-height: 0; background: var(--fond); }
+  .colonne { background: #efede8; border-radius: 10px; display: flex; flex-direction: column; min-height: 0; }
+  .colonne.cible { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .colonne > h4 { margin: 0; padding: 9px 12px; font-size: 12.5px; display: flex; gap: 6px; align-items: center; border-bottom: 3px solid; border-radius: 10px 10px 0 0; }
+  .colonne > h4 span { margin-left: auto; color: var(--doux); font-weight: 400; }
+  .colonne .cartes { overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .fiche { background: var(--panneau); border-radius: 8px; padding: 9px 10px; border: 1px solid var(--ligne); cursor: pointer; font-size: 12.5px; }
+  .fiche:hover { border-color: var(--accent); }
+  .fiche.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--sel); }
+  .fiche .l1 { display: flex; gap: 6px; align-items: baseline; margin-bottom: 3px; }
+  .fiche .l1 b { flex: 1; font-size: 13px; }
+  .fiche .age { color: var(--doux); font-size: 11.5px; white-space: nowrap; }
+  .fiche .age.vieux { color: #c0392b; font-weight: 600; }
+  .fiche .typ { display: inline-block; font-size: 10.5px; border-radius: 5px; padding: 0 5px; margin-bottom: 4px; color: #fff; }
+  .fiche .obj { color: var(--doux); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .fiche .q { background: #fdecea; color: #8e2a1f; border-radius: 6px; padding: 4px 6px; margin-top: 5px; }
+  .fiche .act { margin-top: 4px; color: #23221f; }
+  .fiche .man { font-size: 10.5px; color: var(--doux); }
   /* Sélecteur de dossiers Drive */
   #classeur { position: fixed; inset: 0; background: rgba(20,20,18,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
   #classeur .boite { background: var(--panneau); width: min(880px, 94vw); height: min(620px, 90vh); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
@@ -240,27 +271,40 @@ async function chargerFichiers() {
 function dessinerNav() {
   const { comptes, processus, compteurs } = etat.moi;
   let h = "";
+  // Chaque section (boîte mail ou casquette) est un « classeur » repliable ; l'état est mémorisé.
+  const classeur = (cle, titre, contenu, alerte = 0) => {
+    const replie = memo(`courrier.replie.${cle}`) === "1";
+    return `<h2 class="classeur${replie ? " replie" : ""}" data-classeur="${esc(cle)}"><span class="chev">▾</span>${titre}${alerte ? `<span class="nbc alerte">${alerte}</span>` : ""}</h2>`
+      + `<div class="contenu-classeur" data-contenu="${esc(cle)}" ${replie ? "hidden" : ""}>${contenu}</div>`;
+  };
+  const suivis = etat.moi.suivis ?? [];
   for (const c of comptes.filter((x) => x.role !== "drive")) {
     const id = identite(c.email);
-    h += `<h2>${esc(c.role === "recrutement" ? "Recrutement · " : "")}${esc(c.email)}</h2>`;
     const liste = c.role === "recrutement" ? DOSSIERS.filter(([, q]) => ["INBOX", "in:sent", "is:starred"].includes(q)) : DOSSIERS;
-    for (const [nom, q] of liste) {
-      h += `<div class="entree" data-boite="${esc(c.email)}" data-q="${esc(q)}"><span class="pastille" style="background:${q === "INBOX" ? (id?.coul ?? "#999") : "transparent"}"></span>${esc(nom)}</div>`;
-    }
+    h += classeur(c.email, esc(c.role === "recrutement" ? "Recrutement · " : "") + esc(c.email), liste.map(([nom, q]) =>
+      `<div class="entree" data-boite="${esc(c.email)}" data-q="${esc(q)}"><span class="pastille" style="background:${q === "INBOX" ? (id?.coul ?? "#999") : "transparent"}"></span>${esc(nom)}</div>`).join(""));
   }
   const parCasquette = {};
   for (const p of processus) (parCasquette[p.casquette] ??= []).push(p);
   for (const [cas, liste] of Object.entries(parCasquette)) {
-    h += `<h2>${esc(cas)}</h2>`;
-    for (const p of liste) {
-      const n = compteurs[p.id];
-      h += `<div class="entree" data-processus="${p.id}"><span class="pastille" style="background:${esc(p.couleur || "#999")}"></span>${esc(p.nom)}<span class="nb">${n ?? ""}</span></div>`;
-    }
+    let alerte = 0;
+    const contenu = liste.map((p) => {
+      const s = suivis.find((x) => x.processus_id === p.id);
+      if (s) alerte += s.a_traiter;
+      const badge = s ? (s.a_traiter ? `<span class="nb"><span class="alerte" title="Dossiers à traiter">${s.a_traiter}</span></span>` : `<span class="nb">▦</span>`) : `<span class="nb">${compteurs[p.id] ?? ""}</span>`;
+      return `<div class="entree" data-processus="${p.id}" ${s ? `data-suivi="${esc(s.id)}"` : ""}><span class="pastille" style="background:${esc(p.couleur || "#999")}"></span>${esc(p.nom)}${badge}</div>`;
+    }).join("");
+    h += classeur("cas:" + cas, esc(cas), contenu, alerte);
   }
   $("#nav").innerHTML = h;
+  for (const t of document.querySelectorAll("[data-classeur]")) t.onclick = () => {
+    const cont = document.querySelector(`[data-contenu="${CSS.escape(t.dataset.classeur)}"]`);
+    cont.hidden = !cont.hidden; t.classList.toggle("replie", cont.hidden);
+    memo(`courrier.replie.${t.dataset.classeur}`, cont.hidden ? "1" : "0");
+  };
   for (const e of document.querySelectorAll("[data-boite]")) e.onclick = () => ouvrirDossier(e.dataset.boite, e.dataset.q);
   for (const e of document.querySelectorAll("[data-processus]")) {
-    e.onclick = () => ouvrirProcessus(e.dataset.processus);
+    e.onclick = () => e.dataset.suivi ? ouvrirSuivi(e.dataset.suivi, e.dataset.processus) : ouvrirProcessus(e.dataset.processus);
     e.ondragover = (ev) => { ev.preventDefault(); e.classList.add("cible"); };
     e.ondragleave = () => e.classList.remove("cible");
     e.ondrop = async (ev) => {
@@ -289,6 +333,7 @@ function requete() {
 
 async function ouvrirDossier(email, dossier, recherche) {
   etat.vue = { boite: email, dossier, onglet: memo("courrier.onglet") || "primary", recherche };
+  $("#app").classList.remove("kanban");
   etat.sel = null;
   viderLecture();
   marquerNav();
@@ -323,6 +368,7 @@ function viderLecture(texte = "Sélectionnez une conversation.") {
 
 async function ouvrirProcessus(id) {
   etat.vue = { processus: id };
+  $("#app").classList.remove("kanban");
   etat.sel = null;
   viderLecture("Chargement…");
   marquerNav();
@@ -392,9 +438,10 @@ function dessinerListe() {
 }
 
 // ---------- Lecture d'une conversation ----------
-async function lire(m) {
+function lireFil(m) { return lire(m, true); }
+async function lire(m, depuisTableau = false) {
   etat.sel = m.thread_id;
-  dessinerListe();
+  if (!depuisTableau && !etat.vue?.suivi) dessinerListe();
   const zone = $("#lecture");
   zone.innerHTML = `<div class="vide">Chargement…</div>`;
   try {
@@ -467,6 +514,83 @@ async function lire(m) {
     };
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+// ---------- Tableau de suivi (Kanban) d'un flux d'échanges ----------
+const COLONNES = [
+  ["a_traiter", "À traiter par moi", "#c0392b"],
+  ["attente_efficience", "En attente d'Efficience Paie", "#e8a33d"],
+  ["attente_salarie", "En attente d'un salarié", "#7a5bb3"],
+  ["clos", "Clos (30 derniers jours)", "#3f8f4f"],
+];
+const COUL_TYPE = { "Déclaration nouveau salarié": "#2f6fb3", "Contrat": "#1f8a8a", "Paie du mois": "#3f8f4f",
+  "Demande d'un salarié": "#7a5bb3", "Administratif": "#8a6d3b", "Autre": "#8a8578" };
+
+async function ouvrirSuivi(flux, processusId) {
+  etat.vue = { suivi: flux, processus: processusId, filtre: "" };
+  etat.sel = null;
+  $("#app").classList.add("kanban");
+  marquerNav();
+  viderLecture("Cliquez sur une carte pour ouvrir la conversation.");
+  $("#liste").innerHTML = `<div class="vide">Chargement du tableau…</div>`;
+  try {
+    const d = await api("suivi_liste", { flux });
+    etat.fils = d.fils;
+    dessinerTableau();
+  } catch (e) { $("#liste").innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+function age(dateIso) {
+  const j = Math.floor((Date.now() - new Date(dateIso).getTime()) / 86400000);
+  return { j, txt: j === 0 ? "aujourd'hui" : j === 1 ? "hier" : `il y a ${j} j` };
+}
+
+function dessinerTableau() {
+  const v = etat.vue, s = (etat.moi.suivis ?? []).find((x) => x.id === v.suivi);
+  const f = (v.filtre || "").toLowerCase();
+  const visibles = etat.fils.filter((x) => !f || [x.objet, x.personne, x.resume, x.action, x.type].join(" ").toLowerCase().includes(f));
+  const limiteClos = Date.now() - 30 * 86400000;
+  $("#liste").innerHTML = `<div class="tableau">
+    <div class="entete-t"><h3>${esc(s?.nom ?? "Suivi")}</h3><input type="search" id="filtre-t" placeholder="Filtrer (nom, type…)" value="${esc(v.filtre)}"><button id="maj-t" title="Recharger">↻</button></div>
+    <div class="colonnes">${COLONNES.map(([cle, nom, coul]) => {
+      const cartes = visibles.filter((x) => x.etat === cle && (cle !== "clos" || new Date(x.dernier_message_at).getTime() > limiteClos));
+      return `<div class="colonne" data-col="${cle}"><h4 style="border-color:${coul}">${esc(nom)}<span>${cartes.length}</span></h4><div class="cartes">${cartes.map((x) => {
+        const a = age(x.dernier_message_at);
+        return `<div class="fiche${x.thread_id === etat.sel ? " sel" : ""}" draggable="true" data-fil="${esc(x.thread_id)}">
+          <div class="l1"><b>${esc(x.personne || x.objet || "(sans objet)")}</b><span class="age${cle !== "clos" && a.j >= 7 ? " vieux" : ""}">${a.txt}</span></div>
+          ${x.type ? `<span class="typ" style="background:${COUL_TYPE[x.type] ?? "#8a8578"}">${esc(x.type)}</span>` : ""}
+          ${x.personne ? `<div class="obj">${esc(x.objet || "")}</div>` : ""}
+          <div>${esc(x.resume || x.extrait || "")}</div>
+          ${cle === "a_traiter" && x.question ? `<div class="q">❓ ${esc(x.question)}</div>` : ""}
+          ${cle !== "clos" && x.action ? `<div class="act">→ ${esc(x.action)}</div>` : ""}
+          <div class="man">${esc(x.dernier_expediteur || "")}${x.manuel ? " · placé à la main" : ""}</div>
+        </div>`;
+      }).join("") || `<div class="vide" style="padding:14px">Rien ici.</div>`}</div></div>`;
+    }).join("")}</div></div>`;
+  let minuterie;
+  $("#filtre-t").oninput = (ev) => { clearTimeout(minuterie); minuterie = setTimeout(() => { etat.vue.filtre = ev.target.value; dessinerTableau(); $("#filtre-t").focus(); }, 250); };
+  $("#maj-t").onclick = () => ouvrirSuivi(v.suivi, v.processus);
+  for (const c of document.querySelectorAll(".fiche")) {
+    c.onclick = () => {
+      const x = etat.fils.find((y) => y.thread_id === c.dataset.fil);
+      etat.sel = x.thread_id;
+      for (const o of document.querySelectorAll(".fiche")) o.classList.toggle("sel", o === c);
+      lireFil({ compte: x.compte, thread_id: x.thread_id, id: x.dernier_message_id, processus_id: v.processus });
+    };
+    c.ondragstart = (ev) => ev.dataTransfer.setData("text/fil", c.dataset.fil);
+  }
+  for (const col of document.querySelectorAll(".colonne")) {
+    col.ondragover = (ev) => { if (ev.dataTransfer.types.includes("text/fil")) { ev.preventDefault(); col.classList.add("cible"); } };
+    col.ondragleave = () => col.classList.remove("cible");
+    col.ondrop = async (ev) => {
+      ev.preventDefault(); col.classList.remove("cible");
+      const fil = ev.dataTransfer.getData("text/fil"), x = etat.fils.find((y) => y.thread_id === fil);
+      if (!x || x.etat === col.dataset.col) return;
+      x.etat = col.dataset.col; x.manuel = true; dessinerTableau();
+      try { await api("suivi_deplacer", { flux: v.suivi, thread_id: fil, etat: col.dataset.col }); etat.moi = await api("moi"); dessinerNav(); }
+      catch (e) { toast(e.message); }
+    };
+  }
 }
 
 // ---------- Classeur : rangement d'une pièce jointe dans un dossier Drive ----------
