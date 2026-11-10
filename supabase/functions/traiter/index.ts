@@ -23,6 +23,25 @@ function texte(part: any): string {
   if (!t && part.mimeType === "text/html" && part.body?.data) t = decoder(part.body.data).replace(/<[^>]+>/g, " ");
   return t;
 }
+// Corps HTML d'un message (pour la citation sous la réponse).
+function htmlDe(part: any): string {
+  if (!part) return "";
+  if (part.mimeType === "text/html" && part.body?.data) return decoder(part.body.data);
+  for (const p of part.parts ?? []) { const h = htmlDe(p); if (h) return h; }
+  return "";
+}
+const echapper = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Citation du message d'origine, au format de Gmail (« Le …, X a écrit : »).
+function citation(m: any, de: string, langueReponse: string) {
+  const d = new Date(Number(m.internalDate));
+  const quand = langueReponse === "en"
+    ? `On ${d.toLocaleString("en-GB", { timeZone: "Europe/Paris", weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}, ${echapper(de)} wrote:`
+    : `Le ${d.toLocaleString("fr-FR", { timeZone: "Europe/Paris", weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}, ${echapper(de)} a écrit :`;
+  const original = htmlDe(m.payload) || `<div style="white-space:pre-wrap">${echapper(texte(m.payload))}</div>`;
+  return `<br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${quand}<br></div>` +
+    `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${original}</blockquote></div>`;
+}
+
 // Langue du message : anglais si les mots-outils anglais dominent.
 function langue(t: string) {
   const en = (t.match(/\b(the|and|i am|your|would|thank you|dear|research|my|with|which)\b/g) ?? []).length;
@@ -468,10 +487,12 @@ Deno.serve(async (req) => {
               `In-Reply-To: ${entete(h, "Message-ID")}`,
               `References: ${entete(h, "Message-ID")}`,
               "MIME-Version: 1.0",
-              `Content-Type: text/${modele.format === "html" ? "html" : "plain"}; charset=UTF-8`,
+              // Toujours en HTML : la réponse, puis le message d'origine cité, comme « Répondre » dans Gmail.
+              "Content-Type: text/html; charset=UTF-8",
               "Content-Transfer-Encoding: 8bit",
               "",
-              modele.format === "html" ? `<div style="font-family:Arial,sans-serif;font-size:14px">${corpsModele}</div>` : corpsModele,
+              `<div style="font-family:Arial,sans-serif;font-size:14px">${modele.format === "html" ? corpsModele : echapper(corpsModele).replace(/\n/g, "<br>")}</div>` +
+                citation(m, de, String(usage).endsWith("-en") ? "en" : "fr"),
             ];
             await google(compte, `${GM}/drafts`, {
               method: "POST",
