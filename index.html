@@ -113,7 +113,10 @@
   .fiche .obj { color: var(--doux); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
   .fiche .q { background: #fdecea; color: #8e2a1f; border-radius: 6px; padding: 4px 6px; margin-top: 5px; }
   .fiche .act { margin-top: 4px; color: #23221f; }
-  .fiche .man { font-size: 10.5px; color: var(--doux); }
+  .fiche .man { font-size: 10.5px; color: var(--doux); display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .fiche .man span { flex: 1; }
+  .fiche .clore { font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+  .fiche .clore:hover { background: #3f8f4f; color: #fff; border-color: #3f8f4f; }
   /* Sélecteur de dossiers Drive */
   #classeur { position: fixed; inset: 0; background: rgba(20,20,18,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
   #classeur .boite { background: var(--panneau); width: min(880px, 94vw); height: min(620px, 90vh); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
@@ -574,7 +577,7 @@ function dessinerTableau() {
           <div>${esc(x.resume || x.extrait || "")}</div>
           ${cle === "a_traiter" && x.question ? `<div class="q">❓ ${esc(x.question)}</div>` : ""}
           ${cle !== "clos" && x.action ? `<div class="act">→ ${esc(x.action)}</div>` : ""}
-          <div class="man">${esc(x.dernier_expediteur || "")}${x.manuel ? " · placé à la main" : ""}</div>
+          <div class="man"><span>${esc(x.dernier_expediteur || "")}${x.manuel ? " · placé à la main" : ""}</span>${cle !== "clos" ? `<button class="clore" title="Marquer comme traité">✓ Clore</button>` : ""}</div>
         </div>`;
       }).join("") || `<div class="vide" style="padding:14px">Rien ici.</div>`}</div></div>`;
     }).join("")}</div></div>`;
@@ -600,11 +603,20 @@ function dessinerTableau() {
     col.ondrop = async (ev) => {
       ev.preventDefault(); col.classList.remove("cible");
       const fil = ev.dataTransfer.getData("text/fil"), x = etat.fils.find((y) => y.thread_id === fil);
-      if (!x || x.etat === col.dataset.col) return;
-      x.etat = col.dataset.col; x.manuel = true; dessinerTableau();
-      try { await api("suivi_deplacer", { flux: v.suivi, thread_id: fil, etat: col.dataset.col }); etat.moi = await api("moi"); dessinerNav(); }
-      catch (e) { toast(e.message); }
+      deplacerCarte(x, col.dataset.col);
     };
+  }
+  for (const b of document.querySelectorAll(".fiche .clore")) {
+    b.onclick = (ev) => { ev.stopPropagation(); deplacerCarte(etat.fils.find((y) => y.thread_id === b.closest(".fiche").dataset.fil), "clos"); };
+  }
+  async function deplacerCarte(x, cible) {
+    if (!x || x.etat === cible) return;
+    const avant = x.etat;
+    x.etat = cible; x.manuel = true;
+    if (cible === "clos" && new Date(x.dernier_message_at).getTime() <= limiteClos) x.dernier_message_at = new Date().toISOString();
+    dessinerTableau();
+    try { await api("suivi_deplacer", { flux: v.suivi, thread_id: x.thread_id, etat: cible }); etat.moi = await api("moi"); dessinerNav(); }
+    catch (e) { x.etat = avant; dessinerTableau(); toast(e.message); }
   }
 }
 
