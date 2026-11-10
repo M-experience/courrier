@@ -77,7 +77,9 @@
   .carte iframe { min-height: 120px; flex: none; }
   .carte.brouillon { border-color: #e8a33d; background: #fffaf1; }
   .carte .tag { font-size: 11px; color: #9a5b00; background: #fde7c2; border-radius: 6px; padding: 0 6px; flex: none; }
-  .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; }
+  .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  #redaction { border-color: var(--accent); }
+  #redaction textarea { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--ligne); border-radius: 8px; font: 14px/1.5 inherit; font-family: inherit; resize: vertical; }
   .pj button { font-size: 12.5px; padding: 3px 8px; }
   /* Classeurs repliables de la barre de gauche */
   nav h2.classeur { cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
@@ -286,12 +288,15 @@ function dessinerNav() {
       + `<div class="contenu-classeur" data-contenu="${esc(cle)}" ${replie ? "hidden" : ""}>${contenu}</div>`;
   };
   const suivis = etat.moi.suivis ?? [];
-  for (const c of comptes.filter((x) => x.role !== "drive")) {
+  const boite = (c) => {
     const id = identite(c.email);
     const liste = c.role === "recrutement" ? DOSSIERS.filter(([, q]) => ["INBOX", "in:sent", "is:starred"].includes(q)) : DOSSIERS;
-    h += classeur(c.email, esc(c.role === "recrutement" ? "Recrutement · " : "") + esc(c.email), liste.map(([nom, q]) =>
+    return classeur(c.email, esc(c.role === "recrutement" ? "Recrutement · " : "") + esc(c.email), liste.map(([nom, q]) =>
       `<div class="entree" data-boite="${esc(c.email)}" data-q="${esc(q)}"><span class="pastille" style="background:${q === "INBOX" ? (id?.coul ?? "#999") : "transparent"}"></span>${esc(nom)}</div>`).join(""));
-  }
+  };
+  // Boîtes principales en tête ; la boîte « recrutement » vient juste sous la rubrique Recrutement.
+  for (const c of comptes.filter((x) => x.role !== "drive" && x.role !== "recrutement")) h += boite(c);
+  const boitesRecrutement = comptes.filter((x) => x.role === "recrutement").map(boite).join("");
   const parCasquette = {};
   for (const p of processus) (parCasquette[p.casquette] ??= []).push(p);
   for (const [cas, liste] of Object.entries(parCasquette)) {
@@ -303,7 +308,9 @@ function dessinerNav() {
       return `<div class="entree" data-processus="${p.id}" ${s ? `data-suivi="${esc(s.id)}"` : ""}><span class="pastille" style="background:${esc(p.couleur || "#999")}"></span>${esc(p.nom)}${badge}</div>`;
     }).join("");
     h += classeur("cas:" + cas, esc(cas), contenu, alerte);
+    if (cas === "Recrutement") h += boitesRecrutement;
   }
+  if (!parCasquette.Recrutement) h += boitesRecrutement;
   $("#nav").innerHTML = h;
   for (const t of document.querySelectorAll("[data-classeur]")) t.onclick = () => {
     const cont = document.querySelector(`[data-contenu="${CSS.escape(t.dataset.classeur)}"]`);
@@ -461,7 +468,8 @@ async function lire(m, depuisTableau = false) {
       <h2>${esc(d.messages[0]?.objet || "(sans objet)")}</h2>
       <div class="barre"><select id="classer">${opts}</select>
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a>
-        <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a></div>
+        <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a>
+        <button id="b-repondre">↩ Répondre</button><button id="b-tous">↩ Répondre à tous</button></div>
       ${d.messages.map((x, i) => `
         <div class="carte${x.brouillon ? " brouillon" : ""}" data-c="${i}">
           <div class="tete">${x.brouillon ? `<span class="tag">Brouillon</span>` : ""}<b>${esc(nomExp(x.expediteur))}</b><span class="ex">${i === dernierIdx ? esc("À " + x.destinataires) : esc(dec(x.extrait))}</span><span class="dt">${new Date(x.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span></div>
@@ -520,8 +528,62 @@ async function lire(m, depuisTableau = false) {
       try { await api("envoyer_brouillon", { compte: m.compte, draft_id: b.dataset.envoyer }); toast("Message envoyé"); lire(m); }
       catch (er) { toast(er.message); b.disabled = false; b.textContent = "Envoyer ce brouillon"; }
     };
+    if ($("#app").classList.contains("kanban")) {
+      zone.insertAdjacentHTML("afterbegin", `<button class="fermer-l" title="Fermer (Échap)">✕ Fermer</button>`);
+      zone.querySelector(".fermer-l").onclick = fermerLectureKanban;
+    }
+    const aRepondre = d.messages.filter((x) => !x.brouillon).pop();
+    $("#b-repondre").onclick = () => ouvrirReponse(m, aRepondre, false);
+    $("#b-tous").onclick = () => ouvrirReponse(m, aRepondre, true);
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+// ---------- Réponse rédigée dans Courrier ----------
+async function ouvrirReponse(m, msg, tous) {
+  if (!msg) return;
+  $("#redaction")?.remove();
+  const zone = $("#lecture");
+  const sigs = etat.moi.signatures ?? [];
+  let sigDefaut = ""; try { sigDefaut = localStorage.getItem("courrier.signature") ?? ""; } catch {}
+  if (sigDefaut && sigDefaut !== "aucune" && !sigs.some((g) => g.id === sigDefaut)) sigDefaut = "";
+  zone.insertAdjacentHTML("beforeend", `<div id="redaction" class="carte">
+    <div class="corps" style="padding-top:10px">
+      <div class="meta" id="r-dest">Préparation…</div>
+      <textarea id="r-texte" rows="9" placeholder="Votre réponse…"></textarea>
+      <div class="actions-brouillon">
+        <select id="r-sig" title="Signature">${sigs.map((g) => `<option value="${g.id}" ${g.id === sigDefaut ? "selected" : ""}>Signature : ${esc(g.nom)}</option>`).join("")}<option value="aucune" ${sigDefaut === "aucune" ? "selected" : ""}>Sans signature</option></select>
+        <button class="principal" id="r-envoyer" disabled>Envoyer</button>
+        <button id="r-brouillon" disabled>Enregistrer en brouillon</button>
+        <button id="r-annuler" style="margin-left:auto">Annuler</button>
+      </div>
+    </div></div>`);
+  const r = $("#redaction");
+  r.scrollIntoView({ behavior: "smooth", block: "end" });
+  $("#r-texte").focus();
+  $("#r-annuler").onclick = () => { if (!$("#r-texte").value.trim() || confirm("Abandonner cette réponse ?")) r.remove(); };
+  $("#r-sig").onchange = (ev) => { try { localStorage.setItem("courrier.signature", ev.target.value); } catch {} };
+  const base = { compte: m.compte, message_id: msg.id, tous };
+  let ap;
+  try {
+    ap = await api("repondre", { ...base, apercu: true });
+    $("#r-dest").innerHTML = `De ${esc(ap.de)}<br>À ${esc(ap.a)}${ap.cc ? `<br>Cc ${esc(ap.cc)}` : ""}<br>Objet ${esc(ap.objet)}`;
+    $("#r-envoyer").disabled = $("#r-brouillon").disabled = false;
+  } catch (e) { $("#r-dest").textContent = e.message; return; }
+  const partir = async (envoyer) => {
+    const texte = $("#r-texte").value.trim();
+    if (!texte) return toast("Le message est vide.");
+    if (envoyer && !confirm(`Envoyer cette réponse à ${ap.a}${ap.cc ? " (copie : " + ap.cc + ")" : ""} ?`)) return;
+    const sig = $("#r-sig").value;
+    for (const b of r.querySelectorAll("button")) b.disabled = true;
+    try {
+      await api("repondre", { ...base, texte, envoyer, signature_id: sig && sig !== "aucune" ? sig : null });
+      toast(envoyer ? "Réponse envoyée" : "Brouillon enregistré");
+      await lire(m, true);
+    } catch (e) { toast(e.message); for (const b of r.querySelectorAll("button")) b.disabled = false; }
+  };
+  $("#r-envoyer").onclick = () => partir(true);
+  $("#r-brouillon").onclick = () => partir(false);
 }
 
 // ---------- Tableau de suivi (Kanban) d'un flux d'échanges ----------
@@ -598,10 +660,7 @@ function dessinerTableau() {
       etat.sel = x.thread_id;
       for (const o of document.querySelectorAll(".fiche")) o.classList.toggle("sel", o === c);
       $("#app").classList.add("ouvert");
-      Promise.resolve(lireFil({ compte: x.compte, thread_id: x.thread_id, id: x.dernier_message_id, processus_id: v.processus })).then(() => {
-        if (!$("#lecture .fermer-l")) $("#lecture").insertAdjacentHTML("afterbegin", `<button class="fermer-l" title="Fermer (Échap)">✕ Fermer</button>`);
-        $("#lecture .fermer-l").onclick = fermerLectureKanban;
-      });
+      lireFil({ compte: x.compte, thread_id: x.thread_id, id: x.dernier_message_id, processus_id: v.processus });
     };
     c.ondragstart = (ev) => ev.dataTransfer.setData("text/fil", c.dataset.fil);
   }

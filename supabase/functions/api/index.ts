@@ -60,6 +60,44 @@ async function resume(email: string, id: string) {
   };
 }
 
+
+// ---------- Réponse rédigée dans Courrier ----------
+const echap = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const encMot = (v: string) => /^[\x20-\x7e]*$/.test(v) ? v : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(v)))}?=`;
+const adresses = (s: string) => (s.match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g) ?? []).map((x) => x.toLowerCase());
+// Découpe une liste d'adresses (virgules hors guillemets) et encode les noms accentués.
+function listeAdresses(s: string) {
+  return s.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((x) => x.trim()).filter(Boolean);
+}
+function encListe(l: string[]) {
+  return l.map((x) => {
+    const m = x.match(/^"?(.*?)"?\s*<(.+)>$/);
+    return m && m[1] ? `${encMot(m[1])} <${m[2]}>` : x;
+  }).join(", ");
+}
+async function preparerReponse(b: Corps) {
+  const m = await google(b.compte, `${GM}/messages/${b.message_id}?format=full`);
+  const h = m.payload?.headers ?? [];
+  const ids: any[] = (await google(b.compte, `${GM}/settings/sendAs`)).sendAs ?? [];
+  const miennes = ids.map((x) => String(x.sendAsEmail).toLowerCase());
+  const de = adresses(entete(h, "From"))[0] ?? "";
+  const estMoi = miennes.includes(de);
+  const recus = [...adresses(entete(h, "To")), ...adresses(entete(h, "Cc")), ...adresses(entete(h, "Delivered-To"))];
+  // On répond avec l'adresse qui a reçu le message (ou qui l'a envoyé, si c'est moi).
+  const exp = (estMoi ? de : recus.find((a) => miennes.includes(a))) || ids.find((x) => x.isDefault)?.sendAsEmail || b.compte;
+  const ident = ids.find((x) => String(x.sendAsEmail).toLowerCase() === String(exp).toLowerCase());
+  const pasMoi = (x: string) => !miennes.some((a) => x.toLowerCase().includes(a));
+  let a: string[], cc: string[] = [];
+  if (estMoi) { a = listeAdresses(entete(h, "To")); if (b.tous) cc = listeAdresses(entete(h, "Cc")); }
+  else {
+    a = listeAdresses(entete(h, "Reply-To") || entete(h, "From"));
+    if (b.tous) cc = [...listeAdresses(entete(h, "To")), ...listeAdresses(entete(h, "Cc"))].filter(pasMoi);
+  }
+  const objet0 = entete(h, "Subject");
+  const objet = /^re\s*:/i.test(objet0) ? objet0 : `Re: ${objet0}`;
+  return { m, h, de: ident?.displayName ? `${ident.displayName} <${ident.sendAsEmail}>` : exp, a, cc, objet };
+}
+
 const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknown>> = {
   async moi(_b, s) {
     const [{ data: comptes }, { data: processus }] = await Promise.all([
@@ -207,6 +245,40 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       body: JSON.stringify({ id: b.draft_id, message: { threadId: m.threadId, raw: btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") } }),
     });
     return { ok: true };
+  },
+
+  // Réponse à un message : aperçu des destinataires, puis envoi ou brouillon (sur clic de l'utilisateur).
+  async repondre(b) {
+    const r = await preparerReponse(b);
+    if (b.apercu) return { de: r.de, a: r.a.join(", "), cc: r.cc.join(", "), objet: r.objet };
+    const texte = String(b.texte ?? "").trim();
+    if (!texte) throw new Error("Le message est vide.");
+    const { data: sig } = b.signature_id ? await db.from("signatures").select("html").eq("id", b.signature_id).maybeSingle() : { data: null };
+    const out = { html: "", texte: "", pj: [] as any[] };
+    analyser(r.m.payload, out);
+    const d = new Date(Number(r.m.internalDate));
+    const quand = `Le ${d.toLocaleString("fr-FR", { timeZone: "Europe/Paris", weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}, ${echap(entete(r.h, "From"))} a écrit :`;
+    const original = out.html || `<div style="white-space:pre-wrap">${echap(out.texte)}</div>`;
+    const html = `<div dir="ltr">${echap(texte).replace(/\n/g, "<br>")}</div>` +
+      `<div class="courrier-signature">${sig?.html ? "<br>" + sig.html : ""}</div>` +
+      `<br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${quand}<br></div>` +
+      `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${original}</blockquote></div>`;
+    const msgid = entete(r.h, "Message-ID");
+    const lignes = [
+      `From: ${encListe([r.de])}`, `To: ${encListe(r.a)}`, ...(r.cc.length ? [`Cc: ${encListe(r.cc)}`] : []),
+      `Subject: ${encMot(r.objet)}`,
+      ...(msgid ? [`In-Reply-To: ${msgid}`, `References: ${(entete(r.h, "References") + " " + msgid).trim()}`] : []),
+      "MIME-Version: 1.0", "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", html,
+    ];
+    const bytes = new TextEncoder().encode(lignes.join("\r\n")); let bin = ""; for (const x of bytes) bin += String.fromCharCode(x);
+    const raw = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    if (b.envoyer) {
+      const e = await google(b.compte, `${GM}/messages/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: r.m.threadId, raw }) });
+      await db.from("journal").insert({ type: "envoi", message_id: e.id, details: { reponse_a: b.message_id, depuis: "Courrier" } });
+      return { ok: true, envoye: true };
+    }
+    await google(b.compte, `${GM}/drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: { threadId: r.m.threadId, raw } }) });
+    return { ok: true, brouillon: true };
   },
 
   // Suppression d'un brouillon, à la demande de l'utilisateur.
