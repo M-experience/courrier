@@ -341,8 +341,12 @@ Deno.serve(async (req) => {
               fait.push("ligne ajoutée au Sheet");
             }
           } else if (action.type === "brouillon") {
-            const usage = action.modele ?? (a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou")
-              ? action.modeles?.certificat : action.modeles?.master);
+            // Certificat seul : modèle certificat. Étudiant en formation initiale : renvoi vers Mon Master.
+            // Sinon (professionnel, profil à préciser) : modèle master.
+            const certifSeul = a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou");
+            const usage = action.modele ?? (certifSeul ? action.modeles?.certificat
+              : a.profil.startsWith("Formation initiale") && action.modeles?.initiale ? action.modeles.initiale
+              : action.modeles?.master);
             const { data: modele } = await db.from("modeles").select("*").eq("usage", usage).maybeSingle();
             if (!modele || modele.corps.includes("[À COMPLÉTER")) { fait.push("pas de brouillon : modèle de réponse à compléter"); continue; }
             const sujet = (modele.sujet ?? "Re: {objet}").replace("{objet}", objet.replace(/^(re|tr|fwd?)\s*:\s*/i, ""));
