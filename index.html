@@ -377,6 +377,11 @@ async function lire(m) {
             ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
               <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
               <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${x.id}" target="_blank" rel="noopener"><button>Modifier dans Mimestream</button></a>
+              <select data-signature="${esc(x.draft_id)}" title="Signature du brouillon">
+                <option value="">Signature…</option>
+                ${(etat.moi.signatures ?? []).map((g) => `<option value="${g.id}">${esc(g.nom)}</option>`).join("")}
+                <option value="aucune">Aucune signature</option>
+              </select>
               <button data-supprimer="${esc(x.draft_id)}" style="margin-left:auto">Supprimer ce brouillon</button>
             </div>` : ""}
           </div>
@@ -392,6 +397,14 @@ async function lire(m) {
       const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    for (const sel of zone.querySelectorAll("[data-signature]")) sel.onchange = async () => {
+      if (!sel.value) return;
+      sel.disabled = true;
+      try {
+        await api("changer_signature", { compte: m.compte, draft_id: sel.dataset.signature, signature_id: sel.value === "aucune" ? null : sel.value });
+        toast(sel.value === "aucune" ? "Signature retirée" : "Signature changée"); lire(m);
+      } catch (er) { toast(er.message); sel.disabled = false; sel.value = ""; }
+    };
     for (const b of zone.querySelectorAll("[data-supprimer]")) b.onclick = async () => {
       if (!confirm("Supprimer définitivement ce brouillon ?")) return;
       b.disabled = true;

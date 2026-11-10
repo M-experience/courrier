@@ -472,6 +472,9 @@ Deno.serve(async (req) => {
             const sujet = (modele.sujet ?? "Re: {objet}").replace("{objet}", objet.replace(/^(re|tr|fwd?)\s*:\s*/i, ""));
             const prenom = np.prenom || np.nom || "";
             const corpsModele = modele.corps.replace(/ ?\{prenom\}/g, prenom ? ` ${prenom}` : "");
+            const { data: sig } = modele.signature_id
+              ? await db.from("signatures").select("html").eq("id", modele.signature_id).maybeSingle() : { data: null };
+            const signature = `<div class="courrier-signature">${sig?.html ? "<br>" + sig.html : ""}</div>`;
             const { data: copies } = await db.from("processus_copies")
               .select("interlocuteurs(nom, email, actif)").eq("processus_id", r.processus_id);
             const cc = [
@@ -492,7 +495,7 @@ Deno.serve(async (req) => {
               "Content-Transfer-Encoding: 8bit",
               "",
               `<div style="font-family:Arial,sans-serif;font-size:14px">${modele.format === "html" ? corpsModele : echapper(corpsModele).replace(/\n/g, "<br>")}</div>` +
-                citation(m, de, String(usage).endsWith("-en") ? "en" : "fr"),
+                signature + citation(m, de, String(usage).endsWith("-en") ? "en" : "fr"),
             ];
             await google(compte, `${GM}/drafts`, {
               method: "POST",

@@ -70,7 +70,8 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       .eq("statut", "nouveau");
     const nb: Record<string, number> = {};
     for (const m of compteurs ?? []) if (m.processus_id) nb[m.processus_id] = (nb[m.processus_id] ?? 0) + 1;
-    return { session: s.email, comptes, processus, compteurs: nb };
+    const { data: signatures } = await db.from("signatures").select("id, nom").order("ordre");
+    return { session: s.email, comptes, processus, compteurs: nb, signatures };
   },
 
   // Liste par conversations, comme la boîte de réception Gmail.
@@ -172,6 +173,34 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     });
     await db.from("journal").insert({ type: "envoi", message_id: r.id, details: { draft_id: b.draft_id, depuis: "Courrier" } });
     return { ok: true, id: r.id };
+  },
+
+  // Change (ou retire) la signature d'un brouillon : on réécrit le brouillon avec la nouvelle signature.
+  async changer_signature(b) {
+    const d = await google(b.compte, `${GM}/drafts/${b.draft_id}?format=full`);
+    const m = d.message;
+    const out = { html: "", texte: "", pj: [] as any[] };
+    analyser(m.payload, out);
+    if (out.pj.length) throw new Error("Ce brouillon contient des pièces jointes : changez la signature dans Gmail ou Mimestream.");
+    let html = out.html || `<div>${out.texte.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</div>`;
+    const { data: sig } = b.signature_id ? await db.from("signatures").select("html").eq("id", b.signature_id).maybeSingle() : { data: null };
+    const bloc = `<div class="courrier-signature">${sig?.html ? "<br>" + sig.html : ""}</div>`;
+    const re = /<div class="courrier-signature">[\s\S]*?<\/div>/;
+    if (re.test(html)) html = html.replace(re, bloc);
+    else if (html.includes('<div class="gmail_quote"')) html = html.replace('<div class="gmail_quote"', bloc + '<br><div class="gmail_quote"');
+    else html += bloc;
+    const h = m.payload?.headers ?? [];
+    const enc = (v: string) => /^[\x20-\x7e]*$/.test(v) ? v : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(v)))}?=`;
+    const lignes = ["From", "To", "Cc", "Bcc", "Subject", "In-Reply-To", "References"]
+      .map((n) => [n, entete(h, n)]).filter(([, v]) => v).map(([n, v]) => `${n}: ${n === "Subject" ? enc(v) : v}`);
+    const raw = [...lignes, "MIME-Version: 1.0", "Content-Type: text/html; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", html].join("\r\n");
+    const bytes = new TextEncoder().encode(raw); let bin = ""; for (const x of bytes) bin += String.fromCharCode(x);
+    await google(b.compte, `${GM}/drafts/${b.draft_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: b.draft_id, message: { threadId: m.threadId, raw: btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") } }),
+    });
+    return { ok: true };
   },
 
   // Suppression d'un brouillon, à la demande de l'utilisateur.
