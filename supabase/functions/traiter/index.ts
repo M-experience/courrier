@@ -123,8 +123,11 @@ function profil(corps: string, objet: string) {
   return pro > 0 ? `Profil mixte, à préciser${detail}` : "À préciser";
 }
 
-const FORMATIONS = ["M1 Transition numérique & co-design", "M2 Transition numérique & co-design", "M1 CIME", "M2 CIME",
-  "Master (niveau non précisé)", "Certificat UX (CS3600A)", "Certificat UX (CS3600A) et/ou M2 Transition numérique & co-design", "Autre"];
+const FORMATIONS = ["M1 Transition numérique & co-design", "M2 Transition numérique & co-design",
+  "Master (niveau non précisé) Transition numérique & co-design", "M1 CIME", "M2 CIME", "Master (niveau non précisé) CIME",
+  "Master (niveau et parcours non précisés)", "Certificat UX (CS3600A)",
+  "Certificat UX (CS3600A) et/ou M2 Transition numérique & co-design",
+  "Certificat UX (CS3600A) et/ou Master (niveau non précisé) Transition numérique & co-design", "Autre"];
 
 // Analyse fine par Claude : formation, profil, résumé, nom et prénom. Renvoie null si indisponible.
 async function analyseClaude(de: string, objet: string, corps: string) {
@@ -150,6 +153,7 @@ Renvoie un JSON avec les clés :
 - "formation" : l'une de ${JSON.stringify(FORMATIONS)},
 - "profil" : "Formation initiale (étudiant)", "Professionnel expérimenté" ou "À préciser",
 - "annees_experience" : nombre ou null,
+- "deja_inscrit" : true si l'expéditeur est déjà inscrit ou admis dans la formation (questions d'emploi du temps, de scolarité, d'intégration, de certificat de scolarité), false s'il s'agit d'une demande d'information ou de candidature,
 - "resume" : une ou deux phrases en français résumant la situation du candidat et ses questions.` }],
       }),
     });
@@ -165,6 +169,7 @@ Renvoie un JSON avec les clés :
       formation: j.formation ?? "Autre",
       profil: j.profil === "Professionnel expérimenté" ? `${j.profil}${ans}` : (j.profil ?? "À préciser"),
       resume: j.resume ?? "",
+      dejaInscrit: j.deja_inscrit === true,
     };
   } catch (e) { console.error("Claude", (e as Error).message); return null; }
 }
@@ -200,7 +205,8 @@ async function analyser(de: string, objet: string, corps: string) {
   const h = analyserCandidat(corps, objet);
   const c = await analyseClaude(de, objet, corps);
   const np = c && (c.nom || c.prenom) ? { nom: c.nom, prenom: c.prenom } : nomPrenom(nom);
-  return { email, np, a: c ? { ...h, formation: c.formation, profil: c.profil, resume: c.resume || h.resume } : h, parClaude: !!c };
+  return { email, np, a: c ? { ...h, formation: c.formation, profil: c.profil, resume: c.resume || h.resume } : h,
+    parClaude: !!c, dejaInscrit: !!c?.dejaInscrit };
 }
 
 // Réécrit tout le Sheet à partir des messages déjà classés par une règle (après un changement de colonnes).
@@ -214,6 +220,7 @@ async function reconstruire(compte: string, r: any) {
     const m = await google(compte, `${GM}/messages/${x.id}?format=full`);
     const h = m.payload?.headers ?? [];
     const res = await analyser(entete(h, "From"), entete(h, "Subject"), texte(m.payload));
+    if (res.dejaInscrit) continue; // étudiant déjà inscrit : hors du suivi des candidatures
     const date = new Date(Number(m.internalDate));
     const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
     const exist = parEmail.get(res.email);
@@ -309,11 +316,15 @@ Deno.serve(async (req) => {
       const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim();
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
-      const { email, np, a, parClaude } = simulation ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false } : await analyser(de, objet, corps);
+      const { email, np, a, parClaude, dejaInscrit } = simulation
+        ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false, dejaInscrit: false }
+        : await analyser(de, objet, corps);
       const fait: string[] = parClaude ? ["analysé par Claude"] : [];
+      if (dejaInscrit) fait.push("étudiant déjà inscrit : ni Sheet ni brouillon");
 
       for (const action of r.actions ?? []) {
         if (simulation) { fait.push(`(simulation) ${action.type}`); continue; }
+        if (dejaInscrit && action.type !== "classer") continue;
         try {
           if (action.type === "classer") {
             await db.from("messages").upsert({
