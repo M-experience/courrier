@@ -23,6 +23,22 @@ function texte(part: any): string {
   if (!t && part.mimeType === "text/html" && part.body?.data) t = decoder(part.body.data).replace(/<[^>]+>/g, " ");
   return t;
 }
+// Langue du message : anglais si les mots-outils anglais dominent.
+function langue(t: string) {
+  const en = (t.match(/\b(the|and|i am|your|would|thank you|dear|research|my|with|which)\b/g) ?? []).length;
+  const fr = (t.match(/\b(je|vous|votre|les|des|merci|bonjour|madame|monsieur|recherche|avec|mon|ma)\b/g) ?? []).length;
+  return en > fr ? "en" : "fr";
+}
+// Libellé Gmail : le crée s'il n'existe pas, puis l'applique au fil.
+async function appliquerLibelle(compte: string, nom: string, threadId: string) {
+  const liste = await google(compte, `${GM}/labels`);
+  let lab = (liste.labels ?? []).find((l: any) => l.name === nom);
+  if (!lab) lab = await google(compte, `${GM}/labels`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: nom, labelListVisibility: "labelShow", messageListVisibility: "show" }) });
+  await google(compte, `${GM}/threads/${threadId}/modify`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ addLabelIds: [lab.id] }) });
+}
+
 function norm(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
@@ -314,16 +330,22 @@ Deno.serve(async (req) => {
       if (listId && !listId.includes("numerique2")) continue;
       if (/no-?reply|newsletter|notification|mailer|zoom\.us|legavote/.test(deNorm)) continue;
       // Mot-clé en mot entier + contexte de candidature + forme de demande personnelle.
+      // Contexte, forme de demande et exclusions propres à la règle (sinon ceux des candidatures).
       const motCle = (c.mots_cles ?? []).find((k: string) => new RegExp(`(^|[^a-z0-9])${norm(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(t));
-      if (!motCle || !CONTEXTE.some((k) => t.includes(norm(k)))) continue;
-      if (!DEMANDE.test(t)) continue;
+      if (!motCle || !(c.contexte ?? CONTEXTE).some((k: string) => t.includes(norm(k)))) continue;
+      if (!(c.demande ? new RegExp(c.demande) : DEMANDE).test(t)) continue;
+      if (c.exclure && new RegExp(c.exclure).test(t)) continue;
 
       const de = entete(h, "From");
       const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim();
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
-      const { email, np, a, parClaude, dejaInscrit, horsUE } = simulation
-        ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false, dejaInscrit: false, horsUE: false }
+      // Analyse des candidatures (Claude ou heuristiques) seulement pour les règles qui en ont besoin.
+      const sansAnalyse = simulation || c.analyse === false;
+      const { email, np, a, parClaude, dejaInscrit, horsUE } = sansAnalyse
+        ? { email: (de.match(/<([^>]+)>/)?.[1] ?? de).trim().toLowerCase(), np: nomPrenom(nom),
+            a: c.analyse === false ? { formation: "", profil: "", resume: "" } : analyserCandidat(corps, objet),
+            parClaude: false, dejaInscrit: false, horsUE: false }
         : await analyser(de, objet, corps);
       const fait: string[] = parClaude ? ["analysé par Claude"] : [];
       if (dejaInscrit) fait.push("étudiant déjà inscrit : ni Sheet ni brouillon");
@@ -339,6 +361,9 @@ Deno.serve(async (req) => {
               processus_id: r.processus_id, statut: "nouveau", traite_par: r.id, maj_at: new Date().toISOString(),
             });
             fait.push("classé");
+          } else if (action.type === "libelle") {
+            await appliquerLibelle(compte, action.nom, m.threadId);
+            fait.push(`libellé « ${action.nom} »`);
           } else if (action.type === "sheet") {
             const sid = await fichierSheet(compte, action.fichier, action.dossier);
             const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
@@ -371,13 +396,15 @@ Deno.serve(async (req) => {
             // Ordre : certificat seul, puis candidat international hors UE (ENIC-NARIC, Campus France),
             // puis étudiant en formation initiale (renvoi vers Mon Master), sinon modèle master.
             const certifSeul = a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou");
-            const usage = action.modele ?? (certifSeul ? action.modeles?.certificat
+            const usage = action.modele ?? (action.langue_auto ? action.modeles?.[langue(t)] : certifSeul ? action.modeles?.certificat
               : horsUE && action.modeles?.international ? action.modeles.international
               : a.profil.startsWith("Formation initiale") && action.modeles?.initiale ? action.modeles.initiale
               : action.modeles?.master);
             const { data: modele } = await db.from("modeles").select("*").eq("usage", usage).maybeSingle();
             if (!modele || modele.corps.includes("[À COMPLÉTER")) { fait.push("pas de brouillon : modèle de réponse à compléter"); continue; }
             const sujet = (modele.sujet ?? "Re: {objet}").replace("{objet}", objet.replace(/^(re|tr|fwd?)\s*:\s*/i, ""));
+            const prenom = np.prenom || np.nom || "";
+            const corpsModele = modele.corps.replace(/ ?\{prenom\}/g, prenom ? ` ${prenom}` : "");
             const { data: copies } = await db.from("processus_copies")
               .select("interlocuteurs(nom, email, actif)").eq("processus_id", r.processus_id);
             const cc = [
@@ -396,7 +423,7 @@ Deno.serve(async (req) => {
               `Content-Type: text/${modele.format === "html" ? "html" : "plain"}; charset=UTF-8`,
               "Content-Transfer-Encoding: 8bit",
               "",
-              modele.format === "html" ? `<div style="font-family:Arial,sans-serif;font-size:14px">${modele.corps}</div>` : modele.corps,
+              modele.format === "html" ? `<div style="font-family:Arial,sans-serif;font-size:14px">${corpsModele}</div>` : corpsModele,
             ];
             await google(compte, `${GM}/drafts`, {
               method: "POST",

@@ -78,6 +78,11 @@ export async function google(email: string, url: string, init: RequestInit = {},
   }
   if (!r.ok) {
     const txt = await r.text();
+    // Quota Gmail par minute dépassé (403) : on patiente puis on réessaie (3 s, 6 s, 12 s, 24 s).
+    if (r.status === 403 && /Quota exceeded|rateLimitExceeded|userRateLimitExceeded/.test(txt) && essai < 4) {
+      await new Promise((ok) => setTimeout(ok, 3000 * 2 ** essai + Math.random() * 1000));
+      return google(email, url, init, essai + 1);
+    }
     throw new Error(`Google ${r.status} : ${txt.slice(0, 300)}`);
   }
   return r.status === 204 ? null : r.json();
