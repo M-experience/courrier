@@ -210,6 +210,50 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     return { ok: true };
   },
 
+  // ---------- Rangement des pièces jointes dans Drive ----------
+  // Sous-dossiers d'un dossier (parent = "root", "partages" ou un identifiant), ou recherche par nom.
+  async drive_dossiers(b) {
+    const DOSSIER = "mimeType='application/vnd.google-apps.folder' and trashed=false";
+    const q = b.recherche
+      ? `${DOSSIER} and name contains '${String(b.recherche).replace(/\\/g, "").replace(/'/g, "\\'")}'`
+      : b.parent === "partages" ? `${DOSSIER} and sharedWithMe=true`
+      : `${DOSSIER} and '${b.parent ?? "root"}' in parents`;
+    const p = new URLSearchParams({
+      q, orderBy: "name", pageSize: "200", fields: "files(id,name,folderColorRgb)",
+      supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+    });
+    const r = await google(b.compte, `https://www.googleapis.com/drive/v3/files?${p}`);
+    const { data } = await db.from("parametres").select("valeur").eq("cle", "drive_recents").maybeSingle();
+    return { dossiers: r.files ?? [], recents: JSON.parse(data?.valeur ?? "[]") };
+  },
+
+  // Copie une pièce jointe Gmail dans un dossier Drive (éventuellement d'un autre compte).
+  async ranger_pj(b) {
+    const pj = await google(b.compte, `${GM}/messages/${b.message_id}/attachments/${b.attachment_id}`);
+    const bin = atob(pj.data.replace(/-/g, "+").replace(/_/g, "/"));
+    const octets = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const limite = "courrier" + crypto.randomUUID();
+    const enc = new TextEncoder();
+    const debut = enc.encode(`--${limite}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify({ name: b.nom, parents: [b.dossier_id] }) +
+      `\r\n--${limite}\r\nContent-Type: ${b.mime || "application/octet-stream"}\r\n\r\n`);
+    const fin = enc.encode(`\r\n--${limite}--`);
+    const corps = new Uint8Array(debut.length + octets.length + fin.length);
+    corps.set(debut, 0); corps.set(octets, debut.length); corps.set(fin, debut.length + octets.length);
+    const f = await google(b.drive_compte,
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink", {
+        method: "POST", headers: { "Content-Type": `multipart/related; boundary=${limite}` }, body: corps,
+      });
+    // Dossiers récents (8 au plus), pour les proposer en premier la fois suivante.
+    const { data } = await db.from("parametres").select("valeur").eq("cle", "drive_recents").maybeSingle();
+    const recents = [{ compte: b.drive_compte, id: b.dossier_id, nom: b.dossier_nom },
+      ...JSON.parse(data?.valeur ?? "[]").filter((x: any) => x.id !== b.dossier_id)].slice(0, 8);
+    await db.from("parametres").upsert({ cle: "drive_recents", valeur: JSON.stringify(recents) });
+    await db.from("journal").insert({ type: "rangement_drive", message_id: b.message_id,
+      details: { fichier: b.nom, compte: b.drive_compte, dossier: b.dossier_nom, drive_id: f.id } });
+    return { ok: true, lien: f.webViewLink };
+  },
+
   // Fichiers de suivi (Google Sheets) alimentés par les règles.
   async fichiers() {
     const { data } = await db.from("parametres").select("cle, valeur").like("cle", "sheet:%");

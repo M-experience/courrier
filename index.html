@@ -78,6 +78,32 @@
   .carte.brouillon { border-color: #e8a33d; background: #fffaf1; }
   .carte .tag { font-size: 11px; color: #9a5b00; background: #fde7c2; border-radius: 6px; padding: 0 6px; flex: none; }
   .actions-brouillon { display: flex; gap: 8px; margin-top: 8px; }
+  .pj button { font-size: 12.5px; padding: 3px 8px; }
+  /* Sélecteur de dossiers Drive */
+  #classeur { position: fixed; inset: 0; background: rgba(20,20,18,.35); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  #classeur .boite { background: var(--panneau); width: min(880px, 94vw); height: min(620px, 90vh); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  #classeur .haut { padding: 14px 18px 8px; border-bottom: 1px solid var(--ligne); }
+  #classeur .haut h3 { margin: 0 0 8px; font-size: 15px; }
+  #classeur .comptes { display: flex; gap: 6px; flex-wrap: wrap; }
+  #classeur .comptes button.actif { background: var(--sel); border-color: var(--accent); font-weight: 600; }
+  #classeur .milieu { flex: 1; display: grid; grid-template-columns: 200px 1fr; min-height: 0; }
+  #classeur .recents { border-right: 1px solid var(--ligne); overflow: auto; padding: 10px 0; background: #fbfaf8; }
+  #classeur .recents h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--doux); margin: 4px 14px; }
+  #classeur .recents div { padding: 5px 14px; cursor: pointer; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #classeur .recents div:hover { background: var(--survol); }
+  #classeur .zone { display: flex; flex-direction: column; min-height: 0; }
+  #classeur .outils { display: flex; gap: 8px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--ligne); }
+  #classeur .fil { flex: 1; font-size: 13px; color: var(--doux); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #classeur .fil a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  #classeur .outils input { width: 200px; padding: 5px 8px; border: 1px solid var(--ligne); border-radius: 8px; font: inherit; }
+  #classeur .grille { flex: 1; overflow: auto; padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; align-content: start; }
+  #classeur .dossier { border: 1px solid var(--ligne); border-radius: 10px; padding: 12px 10px 10px; cursor: pointer; text-align: center; font-size: 12.5px; position: relative; }
+  #classeur .dossier:hover { background: var(--survol); border-color: var(--accent); }
+  #classeur .dossier svg { width: 54px; height: 44px; display: block; margin: 0 auto 6px; }
+  #classeur .dossier span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #classeur .dossier i { position: absolute; top: 8px; right: 8px; width: 9px; height: 9px; border-radius: 50%; }
+  #classeur .bas { display: flex; gap: 8px; align-items: center; padding: 10px 18px; border-top: 1px solid var(--ligne); }
+  #classeur .bas .meta { flex: 1; margin: 0; }
   #lecture { display: block; }
 </style>
 </head>
@@ -189,7 +215,7 @@ async function demarrer() {
   $("#accueil").hidden = true; $("#app").hidden = false;
   $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = false;
   chargerFichiers();
-  $("#qui").textContent = etat.moi.comptes.map((c) => c.email).join(" · ");
+  $("#qui").textContent = etat.moi.comptes.filter((c) => c.role !== "drive").map((c) => c.email).join(" · ");
   dessinerNav();
   const principal = etat.moi.comptes.find((c) => c.role === "principal") || etat.moi.comptes[0];
   ouvrirDossier(principal.email, "INBOX");
@@ -210,7 +236,7 @@ async function chargerFichiers() {
 function dessinerNav() {
   const { comptes, processus, compteurs } = etat.moi;
   let h = "";
-  for (const c of comptes) {
+  for (const c of comptes.filter((x) => x.role !== "drive")) {
     const id = identite(c.email);
     h += `<h2>${esc(c.role === "recrutement" ? "Recrutement · " : "")}${esc(c.email)}</h2>`;
     const liste = c.role === "recrutement" ? DOSSIERS.filter(([, q]) => ["INBOX", "in:sent", "is:starred"].includes(q)) : DOSSIERS;
@@ -383,7 +409,9 @@ async function lire(m) {
           <div class="corps" ${i === dernierIdx || x.brouillon ? "" : "hidden"}>
             ${x.brouillon ? `<div class="meta">À ${esc(x.destinataires)}</div>` : ""}
             ${x.cc ? `<div class="meta">Cc ${esc(x.cc)}</div>` : ""}
-            ${x.pieces_jointes.length ? `<div class="pj">${x.pieces_jointes.map((p) => `<span>📎 ${esc(p.nom)}</span>`).join("")}</div>` : ""}
+            ${x.pieces_jointes.length ? `<div class="pj">${x.pieces_jointes.map((p, k) => x.brouillon
+              ? `<span>📎 ${esc(p.nom)}</span>`
+              : `<button data-ranger="${i}:${k}" title="Ranger cette pièce jointe dans Drive">📎 ${esc(p.nom)} · Ranger dans Drive…</button>`).join("")}</div>` : ""}
             <iframe sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin" data-f="${i}"></iframe>
             ${x.brouillon && x.draft_id ? `<div class="actions-brouillon">
               <button class="principal" data-envoyer="${esc(x.draft_id)}">Envoyer ce brouillon</button>
@@ -408,6 +436,10 @@ async function lire(m) {
       const f = corps.querySelector("iframe"); if (!corps.hidden && f?.onload) f.onload();
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    for (const b of zone.querySelectorAll("[data-ranger]")) b.onclick = () => {
+      const [i, k] = b.dataset.ranger.split(":").map(Number);
+      ouvrirClasseur(m.compte, d.messages[i], d.messages[i].pieces_jointes[k]);
+    };
     for (const sel of zone.querySelectorAll("[data-signature]")) sel.onchange = async () => {
       if (!sel.value) return;
       sel.disabled = true;
@@ -431,6 +463,80 @@ async function lire(m) {
     };
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
   } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+}
+
+// ---------- Classeur : rangement d'une pièce jointe dans un dossier Drive ----------
+const ICONE_DOSSIER = (c) => `<svg viewBox="0 0 54 44"><path d="M3 8a4 4 0 0 1 4-4h13l5 5h22a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="${c}"/><path d="M3 15h48v22a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4z" fill="${c}" opacity=".82"/></svg>`;
+let cl = null; // état du classeur ouvert
+
+function ouvrirClasseur(compteMail, msg, pj) {
+  const comptes = etat.moi.comptes.filter((c) => c.role !== "recrutement");
+  cl = { compteMail, msg, pj, comptes, compte: comptes[0].email, chemin: [{ id: "root", nom: "Mon Drive" }], recherche: "" };
+  document.body.insertAdjacentHTML("beforeend", `<div id="classeur"><div class="boite">
+    <div class="haut"><h3>Ranger « ${esc(pj.nom)} » dans Drive</h3><div class="comptes"></div></div>
+    <div class="milieu"><div class="recents"></div>
+      <div class="zone"><div class="outils"><div class="fil"></div><input type="search" placeholder="Rechercher un dossier"></div><div class="grille"></div></div></div>
+    <div class="bas"><span class="meta"></span><button id="cl-annuler">Annuler</button><button class="principal" id="cl-ranger">Ranger ici</button></div>
+  </div></div>`);
+  const c = $("#classeur");
+  c.onclick = (ev) => { if (ev.target === c) fermerClasseur(); };
+  $("#cl-annuler").onclick = fermerClasseur;
+  $("#cl-ranger").onclick = () => { const d = cl.chemin[cl.chemin.length - 1]; rangerIci(cl.compte, d.id, d.nom); };
+  let minuterie;
+  c.querySelector(".outils input").oninput = (ev) => { clearTimeout(minuterie); minuterie = setTimeout(() => { cl.recherche = ev.target.value.trim(); chargerClasseur(); }, 300); };
+  document.addEventListener("keydown", echapClasseur);
+  chargerClasseur();
+}
+function echapClasseur(ev) { if (ev.key === "Escape") fermerClasseur(); }
+function fermerClasseur() { $("#classeur")?.remove(); document.removeEventListener("keydown", echapClasseur); cl = null; }
+
+async function chargerClasseur() {
+  const c = $("#classeur"); if (!c) return;
+  const coul = (email) => identite(email)?.coul ?? "#8a8578";
+  c.querySelector(".comptes").innerHTML = cl.comptes.map((x) =>
+    `<button data-compte="${esc(x.email)}" class="${x.email === cl.compte ? "actif" : ""}"><span class="pastille" style="display:inline-block;background:${coul(x.email)}"></span> ${esc(x.email)}</button>`).join("")
+    + `<button id="cl-ajout" title="Connecter le compte EDM pour ranger dans son Drive">+ Drive EDM</button>`;
+  for (const b of c.querySelectorAll("[data-compte]")) b.onclick = () => {
+    cl.compte = b.dataset.compte; cl.chemin = [{ id: "root", nom: "Mon Drive" }]; cl.recherche = ""; c.querySelector(".outils input").value = ""; chargerClasseur();
+  };
+  const dejaEdm = cl.comptes.some((x) => /ecole-edm\.fr/.test(x.email));
+  $("#cl-ajout").hidden = dejaEdm;
+  $("#cl-ajout").onclick = () => connecter(`&session=${encodeURIComponent(etat.session)}&compte=contact@ecole-edm.fr`);
+  const actuel = cl.chemin[cl.chemin.length - 1];
+  c.querySelector(".fil").innerHTML = cl.recherche ? `Résultats pour « ${esc(cl.recherche)} »`
+    : cl.chemin.map((x, i) => i < cl.chemin.length - 1 ? `<a data-niveau="${i}">${esc(x.nom)}</a>` : `<b>${esc(x.nom)}</b>`).join(" › ")
+      + (cl.chemin.length === 1 ? ` · <a data-partages>Partagés avec moi</a>` : "");
+  for (const a of c.querySelectorAll("[data-niveau]")) a.onclick = () => { cl.chemin = cl.chemin.slice(0, Number(a.dataset.niveau) + 1); chargerClasseur(); };
+  const p = c.querySelector("[data-partages]"); if (p) p.onclick = () => { cl.chemin.push({ id: "partages", nom: "Partagés avec moi" }); chargerClasseur(); };
+  c.querySelector(".bas .meta").textContent = cl.recherche ? "Ouvrez un dossier pour le choisir." : `Destination : ${actuel.nom} (${cl.compte})`;
+  $("#cl-ranger").disabled = !!cl.recherche || actuel.id === "partages";
+  const g = c.querySelector(".grille");
+  g.innerHTML = `<div class="vide" style="grid-column:1/-1">Chargement…</div>`;
+  try {
+    const r = await api("drive_dossiers", { compte: cl.compte, parent: actuel.id, recherche: cl.recherche || undefined });
+    c.querySelector(".recents").innerHTML = `<h4>Dossiers récents</h4>` + (r.recents.length
+      ? r.recents.map((x, i) => `<div data-recent="${i}" title="${esc(x.nom)} (${esc(x.compte)})"><span class="pastille" style="display:inline-block;background:${coul(x.compte)}"></span> ${esc(x.nom)}</div>`).join("")
+      : `<div style="cursor:default;color:var(--doux)">Aucun pour l'instant</div>`);
+    for (const el of c.querySelectorAll("[data-recent]")) el.onclick = () => { const x = r.recents[Number(el.dataset.recent)]; rangerIci(x.compte, x.id, x.nom); };
+    g.innerHTML = r.dossiers.length ? r.dossiers.map((x, i) =>
+      `<div class="dossier" data-d="${i}" title="${esc(x.name)}"><i style="background:${coul(cl.compte)}"></i>${ICONE_DOSSIER(x.folderColorRgb || "#8fb3e8")}<span>${esc(x.name)}</span></div>`).join("")
+      : `<div class="vide" style="grid-column:1/-1">Aucun sous-dossier. Vous pouvez ranger ici.</div>`;
+    for (const el of g.querySelectorAll("[data-d]")) el.onclick = () => {
+      const x = r.dossiers[Number(el.dataset.d)];
+      if (cl.recherche) { cl.recherche = ""; c.querySelector(".outils input").value = ""; cl.chemin = [{ id: "root", nom: "Mon Drive" }]; }
+      cl.chemin.push({ id: x.id, nom: x.name }); chargerClasseur();
+    };
+  } catch (e) { g.innerHTML = `<div class="vide" style="grid-column:1/-1">${esc(e.message)}</div>`; }
+}
+
+async function rangerIci(compteDrive, dossierId, dossierNom) {
+  const b = $("#cl-ranger"); b.disabled = true; b.textContent = "Rangement…";
+  try {
+    const r = await api("ranger_pj", { compte: cl.compteMail, message_id: cl.msg.id, attachment_id: cl.pj.attachmentId,
+      nom: cl.pj.nom, mime: cl.pj.mime, drive_compte: compteDrive, dossier_id: dossierId, dossier_nom: dossierNom });
+    fermerClasseur();
+    toast(`Rangé dans « ${dossierNom} »`);
+  } catch (e) { toast(e.message); b.disabled = false; b.textContent = "Ranger ici"; }
 }
 
 async function classer(m, processus_id) {

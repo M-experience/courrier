@@ -46,7 +46,8 @@ Deno.serve(async (req) => {
     email,
     access_token: t.access_token,
     expires_at: new Date(Date.now() + (t.expires_in ?? 3600) * 1000).toISOString(),
-    role: email === "manuel.zacklad.cnam@gmail.com" ? "recrutement" : "principal",
+    // Le compte EDM sert au rangement dans son Drive ; il ne devient jamais le compte principal.
+    role: email === "manuel.zacklad.cnam@gmail.com" ? "recrutement" : email.endsWith("@ecole-edm.fr") ? "drive" : "principal",
   };
   if (t.refresh_token) ligne.refresh_token = t.refresh_token;
   await db.from("comptes").upsert(ligne);

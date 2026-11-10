@@ -11,7 +11,7 @@ export const REDIRECT_URI =
   `${Deno.env.get("SUPABASE_URL")}/functions/v1/oauth-callback`;
 
 export const COMPTES_AUTORISES = (Deno.env.get("COMPTES_AUTORISES") ??
-  "manuel.zacklad@gmail.com,manuel.zacklad.cnam@gmail.com")
+  "manuel.zacklad@gmail.com,manuel.zacklad.cnam@gmail.com,contact@ecole-edm.fr")
   .split(",").map((s) => s.trim().toLowerCase());
 
 export const ORIGINES = [
