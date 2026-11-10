@@ -244,6 +244,23 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     return { dossiers: r.files ?? [], recents };
   },
 
+  // Crée un sous-dossier (Drive ou Dropbox) et renvoie son identifiant.
+  async creer_dossier(b) {
+    const nom = String(b.nom ?? "").trim();
+    if (!nom) throw new Error("Nom de dossier vide.");
+    if (String(b.compte).startsWith("dropbox:")) {
+      const parent = b.parent === "root" ? "" : b.parent;
+      const r = await dropbox(b.compte.slice(8), "files/create_folder_v2", { path: `${parent}/${nom}`, autorename: false });
+      return { id: r.metadata.path_lower, name: r.metadata.name };
+    }
+    const f = await google(b.compte, "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: nom, mimeType: "application/vnd.google-apps.folder", parents: [b.parent ?? "root"] }),
+    });
+    return { id: f.id, name: f.name };
+  },
+
   // Copie une pièce jointe Gmail dans un dossier Drive (éventuellement d'un autre compte).
   async ranger_pj(b) {
     const pj = await google(b.compte, `${GM}/messages/${b.message_id}/attachments/${b.attachment_id}`);

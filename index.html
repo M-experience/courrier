@@ -482,12 +482,21 @@ function ouvrirClasseur(compteMail, msg, pj) {
   document.body.insertAdjacentHTML("beforeend", `<div id="classeur"><div class="boite">
     <div class="haut"><h3>Ranger « ${esc(pj.nom)} » dans Drive</h3><div class="comptes"></div></div>
     <div class="milieu"><div class="recents"></div>
-      <div class="zone"><div class="outils"><div class="fil"></div><input type="search" placeholder="Rechercher un dossier"></div><div class="grille"></div></div></div>
+      <div class="zone"><div class="outils"><div class="fil"></div><button id="cl-nouveau" title="Créer un sous-dossier ici">+ Nouveau dossier</button><input type="search" placeholder="Rechercher un dossier"></div><div class="grille"></div></div></div>
     <div class="bas"><span class="meta"></span><button id="cl-annuler">Annuler</button><button class="principal" id="cl-ranger">Ranger ici</button></div>
   </div></div>`);
   const c = $("#classeur");
   c.onclick = (ev) => { if (ev.target === c) fermerClasseur(); };
   $("#cl-annuler").onclick = fermerClasseur;
+  $("#cl-nouveau").onclick = async () => {
+    const parent = cl.chemin[cl.chemin.length - 1];
+    const nom = prompt(`Nom du nouveau dossier dans « ${parent.nom} » :`);
+    if (!nom || !nom.trim()) return;
+    try {
+      const d = await api("creer_dossier", { compte: cl.compte, parent: parent.id, nom: nom.trim() });
+      cl.chemin.push({ id: d.id, nom: d.name }); toast(`Dossier « ${d.name} » créé`); chargerClasseur();
+    } catch (e) { toast(e.message); }
+  };
   $("#cl-ranger").onclick = () => { const d = cl.chemin[cl.chemin.length - 1]; rangerIci(cl.compte, d.id, d.nom); };
   let minuterie;
   c.querySelector(".outils input").oninput = (ev) => { clearTimeout(minuterie); minuterie = setTimeout(() => { cl.recherche = ev.target.value.trim(); chargerClasseur(); }, 300); };
@@ -522,6 +531,7 @@ async function chargerClasseur() {
   const p = c.querySelector("[data-partages]"); if (p) p.onclick = () => { cl.chemin.push({ id: "partages", nom: "Partagés avec moi" }); chargerClasseur(); };
   c.querySelector(".bas .meta").textContent = cl.recherche ? "Ouvrez un dossier pour le choisir." : `Destination : ${actuel.nom} (${cl.compte})`;
   $("#cl-ranger").disabled = !!cl.recherche || actuel.id === "partages";
+  $("#cl-nouveau").disabled = !!cl.recherche || actuel.id === "partages";
   const g = c.querySelector(".grille");
   g.innerHTML = `<div class="vide" style="grid-column:1/-1">Chargement…</div>`;
   try {
