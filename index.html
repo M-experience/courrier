@@ -260,6 +260,7 @@ function requete() {
 async function ouvrirDossier(email, dossier, recherche) {
   etat.vue = { boite: email, dossier, onglet: memo("courrier.onglet") || "primary", recherche };
   etat.sel = null;
+  viderLecture();
   marquerNav();
   await chargerListe();
   if (dossier === "INBOX" && !recherche) {
@@ -285,14 +286,23 @@ async function plus() {
   dessinerListe();
 }
 
+// Vide le volet de lecture quand on change de dossier, d'onglet ou de rubrique.
+function viderLecture(texte = "Sélectionnez une conversation.") {
+  $("#lecture").innerHTML = `<div class="vide">${esc(texte)}</div>`;
+}
+
 async function ouvrirProcessus(id) {
   etat.vue = { processus: id };
+  etat.sel = null;
+  viderLecture("Chargement…");
   marquerNav();
   $("#liste").innerHTML = `<div class="vide">Chargement…</div>`;
   const d = await api("processus_messages", { processus_id: id });
   etat.messages = d.messages.map((m) => ({ ...m, compte: m.compte_email, participants: [nomExp(m.expediteur)], nb: 1 }));
   etat.pageToken = null;
   dessinerListe();
+  // Dans une rubrique, on affiche directement le message le plus récent.
+  if (etat.messages.length) lire(etat.messages[0]); else viderLecture("Aucun message dans cette rubrique.");
 }
 
 function barre() {
@@ -309,6 +319,7 @@ function brancherBarre() {
   for (const b of document.querySelectorAll(".onglets button")) b.onclick = () => {
     memo("courrier.onglet", b.dataset.onglet);
     etat.vue.onglet = b.dataset.onglet;
+    etat.sel = null; viderLecture();
     chargerListe();
   };
 }
