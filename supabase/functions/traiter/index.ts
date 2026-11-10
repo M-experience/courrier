@@ -153,6 +153,7 @@ Renvoie un JSON avec les clés :
 - "formation" : l'une de ${JSON.stringify(FORMATIONS)},
 - "profil" : "Formation initiale (étudiant)", "Professionnel expérimenté" ou "À préciser",
 - "annees_experience" : nombre ou null,
+- "international_hors_ue" : true si le candidat réside hors de l'Union européenne ou a obtenu son diplôme hors de l'Union européenne et n'a pas la nationalité d'un pays de l'UE, false sinon,
 - "deja_inscrit" : true si l'expéditeur est déjà inscrit ou admis dans la formation (questions d'emploi du temps, de scolarité, d'intégration, de certificat de scolarité), false s'il s'agit d'une demande d'information ou de candidature,
 - "resume" : une ou deux phrases en français résumant la situation du candidat et ses questions.` }],
       }),
@@ -170,6 +171,7 @@ Renvoie un JSON avec les clés :
       profil: j.profil === "Professionnel expérimenté" ? `${j.profil}${ans}` : (j.profil ?? "À préciser"),
       resume: j.resume ?? "",
       dejaInscrit: j.deja_inscrit === true,
+      horsUE: j.international_hors_ue === true,
     };
   } catch (e) { console.error("Claude", (e as Error).message); return null; }
 }
@@ -206,7 +208,7 @@ async function analyser(de: string, objet: string, corps: string) {
   const c = await analyseClaude(de, objet, corps);
   const np = c && (c.nom || c.prenom) ? { nom: c.nom, prenom: c.prenom } : nomPrenom(nom);
   return { email, np, a: c ? { ...h, formation: c.formation, profil: c.profil, resume: c.resume || h.resume } : h,
-    parClaude: !!c, dejaInscrit: !!c?.dejaInscrit };
+    parClaude: !!c, dejaInscrit: !!c?.dejaInscrit, horsUE: !!c?.horsUE };
 }
 
 // Réécrit tout le Sheet à partir des messages déjà classés par une règle (après un changement de colonnes).
@@ -318,8 +320,8 @@ Deno.serve(async (req) => {
       const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim();
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
-      const { email, np, a, parClaude, dejaInscrit } = simulation
-        ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false, dejaInscrit: false }
+      const { email, np, a, parClaude, dejaInscrit, horsUE } = simulation
+        ? { email: "", np: nomPrenom(nom), a: analyserCandidat(corps, objet), parClaude: false, dejaInscrit: false, horsUE: false }
         : await analyser(de, objet, corps);
       const fait: string[] = parClaude ? ["analysé par Claude"] : [];
       if (dejaInscrit) fait.push("étudiant déjà inscrit : ni Sheet ni brouillon");
@@ -357,10 +359,11 @@ Deno.serve(async (req) => {
               fait.push("ligne ajoutée au Sheet");
             }
           } else if (action.type === "brouillon") {
-            // Certificat seul : modèle certificat. Étudiant en formation initiale : renvoi vers Mon Master.
-            // Sinon (professionnel, profil à préciser) : modèle master.
+            // Ordre : certificat seul, puis candidat international hors UE (ENIC-NARIC, Campus France),
+            // puis étudiant en formation initiale (renvoi vers Mon Master), sinon modèle master.
             const certifSeul = a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou");
             const usage = action.modele ?? (certifSeul ? action.modeles?.certificat
+              : horsUE && action.modeles?.international ? action.modeles.international
               : a.profil.startsWith("Formation initiale") && action.modeles?.initiale ? action.modeles.initiale
               : action.modeles?.master);
             const { data: modele } = await db.from("modeles").select("*").eq("usage", usage).maybeSingle();
