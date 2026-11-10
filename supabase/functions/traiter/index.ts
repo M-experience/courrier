@@ -60,9 +60,15 @@ async function setParam(cle: string, valeur: string) {
 }
 
 const ENTETES_SHEET = ["Nom", "Prénom", "Date d'envoi", "Formation visée", "Profil", "Résumé de la demande", "E-mail", "Lien Gmail", "Avis après entretien"];
+const ENTETES_PHD = ["Nom", "Prénom", "Date d'envoi", "Thème de recherche", "Profil", "Résumé de la demande", "E-mail", "Lien Gmail", "Suite donnée"];
+const AVIS = {
+  candidats: ["Favorable", "Favorable avec réserves", "Défavorable", "Entretien à programmer", "Sans suite"],
+  phd: ["Refus envoyé", "À étudier", "Rendez-vous proposé", "Orienté vers un collègue", "Sans suite"],
+};
+const entetes = (type?: string) => type === "phd" ? ENTETES_PHD : ENTETES_SHEET;
 
 // Crée le Google Sheet de suivi (dans le dossier Drive indiqué) à la première utilisation.
-async function fichierSheet(compte: string, nom: string, dossier?: string) {
+async function fichierSheet(compte: string, nom: string, dossier?: string, type?: string) {
   const cle = `sheet:${nom}`;
   const existant = await param(cle);
   if (existant) return existant;
@@ -82,7 +88,7 @@ async function fichierSheet(compte: string, nom: string, dossier?: string) {
   await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${f.id}/values/Candidats!A1:append?valueInputOption=RAW`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ values: [ENTETES_SHEET] }),
+    body: JSON.stringify({ values: [entetes(type)] }),
   });
   await setParam(cle, f.id);
   return f.id as string;
@@ -192,6 +198,42 @@ Renvoie un JSON avec les clés :
   } catch (e) { console.error("Claude", (e as Error).message); return null; }
 }
 
+// Analyse d'une sollicitation doctorale par Claude : thème, profil, résumé. Repli minimal sans Claude.
+async function analysePhd(de: string, objet: string, corps: string) {
+  const email = (de.match(/<([^>]+)>/)?.[1] ?? de).trim().toLowerCase();
+  const nomBrut = de.replace(/<.*>/, "").replace(/"/g, "").trim() || email;
+  const repli = { email, np: nomPrenom(nomBrut), a: { formation: objet, profil: "À préciser", resume: "" }, parClaude: false, dejaInscrit: false, horsUE: false };
+  const CLE_CLAUDE = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+  if (!CLE_CLAUDE) return repli;
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "x-api-key": CLE_CLAUDE, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-5-5", max_tokens: 2000,
+        system: "Tu analyses des sollicitations d'encadrement doctoral adressées à un professeur en sciences de l'information et de la communication. Réponds uniquement par un objet JSON, sans texte autour.",
+        messages: [{ role: "user", content:
+`Expéditeur : ${de}
+Objet : ${objet}
+Message :
+${corps.slice(0, 6000)}
+
+Renvoie un JSON avec les clés :
+- "nom" et "prenom" de l'expéditeur (d'après la signature ou l'expéditeur),
+- "theme" : le thème de recherche proposé, en quelques mots, en français,
+- "profil" : dernier diplôme et situation actuelle en quelques mots (par exemple « Master RH, en poste en entreprise »),
+- "resume" : une ou deux phrases en français résumant la demande (qui l'a orienté, ce qu'il demande, pièces jointes éventuelles).` }],
+      }),
+    });
+    if (!r.ok) { console.error("Claude", r.status, (await r.text()).slice(0, 300)); return repli; }
+    const d = await r.json();
+    const txt = (d.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+    const j = JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
+    return { ...repli, np: (j.nom || j.prenom) ? { nom: j.nom ?? "", prenom: j.prenom ?? "" } : repli.np,
+      a: { formation: j.theme || objet, profil: j.profil || "À préciser", resume: j.resume || "" }, parClaude: true };
+  } catch (e) { console.error("Claude", (e as Error).message); return repli; }
+}
+
 function analyserCandidat(corps: string, objet: string) {
   const t = norm(`${objet}\n${corps}`);
   const formation = formationVisee(objet, corps);
@@ -231,13 +273,15 @@ async function analyser(de: string, objet: string, corps: string) {
 async function reconstruire(compte: string, r: any) {
   const action = (r.actions ?? []).find((x: any) => x.type === "sheet");
   if (!action) return 0;
-  const sid = await fichierSheet(compte, action.fichier, action.dossier);
+  const sid = await fichierSheet(compte, action.fichier, action.dossier, action.lignes);
   const { data: msgs } = await db.from("messages").select("id").eq("traite_par", r.id).order("date_reception");
   const parEmail = new Map<string, { ligne: any[]; n: number; dates: string[] }>();
   for (const x of msgs ?? []) {
     const m = await google(compte, `${GM}/messages/${x.id}?format=full`);
     const h = m.payload?.headers ?? [];
-    const res = await analyser(entete(h, "From"), entete(h, "Subject"), texte(m.payload));
+    const res = action.lignes === "phd"
+      ? await analysePhd(entete(h, "From"), entete(h, "Subject"), texte(m.payload))
+      : await analyser(entete(h, "From"), entete(h, "Subject"), texte(m.payload));
     if (res.dejaInscrit) continue; // étudiant déjà inscrit : hors du suivi des candidatures
     const date = new Date(Number(m.internalDate));
     const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
@@ -257,13 +301,13 @@ async function reconstruire(compte: string, r: any) {
   await google(compte, `${base}/values/Candidats!A1?valueInputOption=USER_ENTERED`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ values: [ENTETES_SHEET, ...lignes] }),
+    body: JSON.stringify({ values: [entetes(action.lignes), ...lignes] }),
   });
-  await formaterSheet(compte, sid);
+  await formaterSheet(compte, sid, action.lignes);
   return lignes.length;
 }
 
-async function formaterSheet(compte: string, sid: string) {
+async function formaterSheet(compte: string, sid: string, type?: string) {
   await google(compte, `https://sheets.googleapis.com/v4/spreadsheets/${sid}:batchUpdate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -281,7 +325,7 @@ async function formaterSheet(compte: string, sid: string) {
       { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 5, endIndex: 6 }, properties: { pixelSize: 420 }, fields: "pixelSize" } },
       { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 8, endIndex: 9 }, properties: { pixelSize: 220 }, fields: "pixelSize" } },
       { setDataValidation: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: 8, endColumnIndex: 9 },
-        rule: { condition: { type: "ONE_OF_LIST", values: ["Favorable", "Favorable avec réserves", "Défavorable", "Entretien à programmer", "Sans suite"].map((v) => ({ userEnteredValue: v })) },
+        rule: { condition: { type: "ONE_OF_LIST", values: (type === "phd" ? AVIS.phd : AVIS.candidats).map((v) => ({ userEnteredValue: v })) },
           strict: false, showCustomUi: true } } },
     ] }),
   });
@@ -300,7 +344,8 @@ Deno.serve(async (req) => {
   const requeteForcee = u.searchParams.get("q");
   if (u.searchParams.has("reconstruire")) {
     const res: Record<string, number> = {};
-    for (const r of regles ?? []) res[r.nom] = await reconstruire(compte, r);
+    const seule = u.searchParams.get("regle");
+    for (const r of regles ?? []) if (!seule || r.nom === seule) res[r.nom] = await reconstruire(compte, r);
     return json({ reconstruit: res });
   }
 
@@ -341,12 +386,13 @@ Deno.serve(async (req) => {
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
       // Analyse des candidatures (Claude ou heuristiques) seulement pour les règles qui en ont besoin.
-      const sansAnalyse = simulation || c.analyse === false;
+      const sansAnalyse = simulation || c.analyse === false || c.analyse === "phd";
       const { email, np, a, parClaude, dejaInscrit, horsUE } = sansAnalyse
         ? { email: (de.match(/<([^>]+)>/)?.[1] ?? de).trim().toLowerCase(), np: nomPrenom(nom),
-            a: c.analyse === false ? { formation: "", profil: "", resume: "" } : analyserCandidat(corps, objet),
+            a: (c.analyse === false || c.analyse === "phd") ? { formation: "", profil: "", resume: "" } : analyserCandidat(corps, objet),
             parClaude: false, dejaInscrit: false, horsUE: false }
         : await analyser(de, objet, corps);
+      const resPhd = !simulation && c.analyse === "phd" ? await analysePhd(de, objet, corps) : null;
       const fait: string[] = parClaude ? ["analysé par Claude"] : [];
       if (dejaInscrit) fait.push("étudiant déjà inscrit : ni Sheet ni brouillon");
 
@@ -365,8 +411,10 @@ Deno.serve(async (req) => {
             await appliquerLibelle(compte, action.nom, m.threadId);
             fait.push(`libellé « ${action.nom} »`);
           } else if (action.type === "sheet") {
-            const sid = await fichierSheet(compte, action.fichier, action.dossier);
+            const sid = await fichierSheet(compte, action.fichier, action.dossier, action.lignes);
+            if (action.lignes === "phd" && !(await param(`format:${sid}`))) { await formaterSheet(compte, sid, "phd"); await setParam(`format:${sid}`, "1"); }
             const base = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values`;
+            const ligne = resPhd ? ligneSheet(resPhd.np, date, resPhd.a, email, lien) : ligneSheet(np, date, a, email, lien);
             const col = await google(compte, `${base}/Candidats!G1:G10000`);
             const k = (col.values ?? []).findIndex((v: string[]) => (v[0] ?? "").toLowerCase() === email);
             if (k > 0) {
@@ -374,7 +422,7 @@ Deno.serve(async (req) => {
               const avant = cell.values?.[0]?.[0] ?? "";
               await google(compte, `${base}/Candidats!F${k + 1}?valueInputOption=RAW`, {
                 method: "PUT", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ values: [[`${avant} | Nouveau message du ${isoParis(date)} : ${a.resume}`]] }),
+                body: JSON.stringify({ values: [[`${avant} | Nouveau message du ${isoParis(date)} : ${(resPhd?.a ?? a).resume}`]] }),
               });
               fait.push("ligne existante complétée (même candidat)");
             } else {
@@ -388,7 +436,7 @@ Deno.serve(async (req) => {
               await google(compte, `${base}/Candidats!A2:H2?valueInputOption=USER_ENTERED`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ values: [ligneSheet(np, date, a, email, lien)] }),
+                body: JSON.stringify({ values: [ligne] }),
               });
               fait.push("ligne ajoutée en tête du Sheet");
             }
