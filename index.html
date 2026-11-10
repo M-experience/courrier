@@ -87,6 +87,9 @@
   .champs-r label { color: var(--doux); }
   .champs-r input { padding: 4px 7px; border: 1px solid var(--ligne); border-radius: 6px; font: inherit; }
   .rep-msg { display: flex; gap: 6px; margin-top: 6px; }
+  .cite-r { margin-top: 8px; border-left: 3px solid var(--ligne); padding-left: 8px; }
+  .cite-r summary { cursor: pointer; color: var(--doux); font-size: 12.5px; }
+  .cite-r iframe { width: 100%; height: 240px; border: 1px solid var(--ligne); border-radius: 6px; margin-top: 4px; background: #fff; }
   .rep-msg button { font-size: 12px; padding: 2px 8px; }
   #redaction textarea { width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--ligne); border-radius: 8px; font: 14px/1.5 inherit; font-family: inherit; resize: vertical; }
   .pj button { font-size: 12.5px; padding: 3px 8px; }
@@ -574,6 +577,7 @@ async function ouvrirReponse(m, msg, tous) {
       <div class="meta">En réponse au message de <b>${esc(nomExp(msg.expediteur))}</b> du ${new Date(msg.date).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
       <div class="champs-r" id="r-dest">Préparation…</div>
       <textarea id="r-texte" rows="9" placeholder="Votre réponse…"></textarea>
+      <details class="cite-r" open><summary>Message auquel vous répondez</summary><iframe id="r-cite" sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe></details>
       <div class="actions-brouillon">
         <select id="r-sig" title="Signature">${sigs.map((g) => `<option value="${g.id}" ${g.id === sigDefaut ? "selected" : ""}>Signature : ${esc(g.nom)}</option>`).join("")}<option value="aucune" ${sigDefaut === "aucune" ? "selected" : ""}>Sans signature</option></select>
         <button class="principal" id="r-envoyer" disabled>Envoyer</button>
@@ -582,6 +586,10 @@ async function ouvrirReponse(m, msg, tous) {
       </div>
     </div></div>`);
   const r = $("#redaction");
+  const fc = $("#r-cite");
+  fc.srcdoc = `<base target="_blank"><style>body{font:13px/1.45 sans-serif;margin:8px;color:#444;word-wrap:break-word}img{max-width:100%;height:auto}</style>`
+    + `<div style="color:#888;margin-bottom:6px">De ${esc(msg.expediteur)} · ${new Date(msg.date).toLocaleString("fr-FR", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>`
+    + (msg.html || `<pre style="white-space:pre-wrap;font:inherit">${esc(msg.texte || "")}</pre>`);
   r.scrollIntoView({ behavior: "smooth", block: "end" });
   $("#r-texte").focus();
   $("#r-annuler").onclick = () => { if (!$("#r-texte").value.trim() || confirm("Abandonner cette réponse ?")) r.remove(); };
