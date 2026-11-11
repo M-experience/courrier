@@ -369,10 +369,21 @@ Deno.serve(async (req) => {
   }
 
   const rapport: any[] = [];
+  // « regle » : ne passe qu'une règle ; « max » : nombre de messages examinés (rattrapage sur une période).
+  const seuleRegle = u.searchParams.get("regle");
+  const max = Math.min(Number(u.searchParams.get("max") ?? 50) || 50, 500);
   for (const r of regles ?? []) {
+    if (seuleRegle && r.nom !== seuleRegle) continue;
     const c = r.conditions ?? {};
-    const liste = await google(compte, `${GM}/messages?maxResults=50&q=${encodeURIComponent(requeteForcee ?? c.requete_gmail ?? "in:inbox newer_than:1d")}`);
-    const ids: string[] = (liste.messages ?? []).map((m: any) => m.id);
+    const ids: string[] = [];
+    let page: string | undefined;
+    do {
+      const q = new URLSearchParams({ maxResults: String(Math.min(max - ids.length, 100)), q: requeteForcee ?? c.requete_gmail ?? "in:inbox newer_than:1d" });
+      if (page) q.set("pageToken", page);
+      const liste = await google(compte, `${GM}/messages?${q}`);
+      ids.push(...(liste.messages ?? []).map((m: any) => m.id));
+      page = liste.nextPageToken;
+    } while (page && ids.length < max);
     if (!ids.length) continue;
     const { data: deja } = await db.from("messages").select("id").in("id", ids).not("traite_par", "is", null);
     const vus = new Set((deja ?? []).map((x) => x.id));
@@ -460,6 +471,10 @@ Deno.serve(async (req) => {
               fait.push("ligne ajoutée en tête du Sheet");
             }
           } else if (action.type === "brouillon") {
+            // Pas de brouillon si j'ai déjà répondu dans cette conversation.
+            const filR = await google(compte, `${GM}/threads/${m.threadId}?format=minimal`);
+            if ((filR.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("SENT"))) { fait.push("pas de brouillon : déjà répondu"); continue; }
+            if ((filR.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("DRAFT"))) { fait.push("pas de brouillon : un brouillon existe déjà"); continue; }
             // Ordre : certificat seul, puis candidat international hors UE (ENIC-NARIC, Campus France),
             // puis étudiant en formation initiale (renvoi vers Mon Master), sinon modèle master.
             const certifSeul = a.formation.startsWith("Certificat UX (CS3600A)") && !a.formation.includes("et/ou");
