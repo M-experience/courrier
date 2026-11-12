@@ -443,7 +443,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const { data } = await db.from("messages").select("*")
       .eq("processus_id", b.processus_id).order("date_reception", { ascending: false }).limit(100);
     const msgs = data ?? [];
-    const etats = await parLots(msgs, 8, async (m) => {
+    const etats = await parLots(msgs, 8, async (m: any): Promise<any> => {
       try {
         const t = await google(m.compte_email, `${GM}/threads/${m.thread_id}?format=minimal`);
         const apres = (t.messages ?? []).filter((x: any) => Number(x.internalDate) > new Date(m.date_reception).getTime());
@@ -453,7 +453,14 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
         return { reponse: "attente" };
       } catch { return { reponse: null }; }
     });
-    return { messages: msgs.map((m, i) => ({ ...m, ...etats[i], compte: m.compte_email, date: m.date_reception, non_lu: false })) };
+    return { messages: msgs.map((m, i) => ({ ...m, ...etats[i], reponse_auto: etats[i].reponse,
+      ...(m.repondu_manuel ? { reponse: "repondu" } : {}), compte: m.compte_email, date: m.date_reception, non_lu: false })) };
+  },
+
+  // Marque (ou démarque) un message comme répondu, à la main.
+  async marquer_repondu(b) {
+    await db.from("messages").update({ repondu_manuel: b.oui ? new Date().toISOString() : null }).eq("id", b.id);
+    return { ok: true };
   },
 
   async message(b) {

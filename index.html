@@ -72,6 +72,8 @@
   .rep.ok { background: #e3f1e5; color: #2e7a3c; }
   .rep.br { background: #fde7c2; color: #9a5b00; }
   .rep.at { background: #fdecea; color: #a8321f; }
+  .rep.cliq { cursor: pointer; }
+  .rep.cliq:hover { outline: 1px solid currentColor; }
   .carte { border: 1px solid var(--ligne); border-radius: 8px; margin-bottom: 10px; }
   .carte .tete { padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; border-radius: 8px; }
   .carte .tete:hover { background: var(--sel); }
@@ -414,6 +416,10 @@ async function ouvrirProcessus(id) {
 
 function barre() {
   const v = etat.vue;
+  if (v?.processus && !v.suivi) {
+    const n = etat.messages.filter((m) => m.reponse === "repondu").length;
+    return `<div class="filtres"><button id="masquer-rep" class="${memo("courrier.masquerRepondus") === "1" ? "actif" : ""}" title="Masquer ou afficher les mails déjà répondus">${memo("courrier.masquerRepondus") === "1" ? `Afficher les répondus (${n})` : `Masquer les répondus (${n})`}</button></div>`;
+  }
   if (!v?.boite || v.dossier !== "INBOX" || v.recherche) return "";
   return `<div class="onglets">${ONGLETS.map(([nom, cat, coul]) => {
     const n = etat.compteurs[cat];
@@ -423,6 +429,9 @@ function barre() {
 }
 
 function brancherBarre() {
+  if ($("#masquer-rep")) $("#masquer-rep").onclick = () => {
+    memo("courrier.masquerRepondus", memo("courrier.masquerRepondus") === "1" ? "0" : "1"); dessinerListe();
+  };
   for (const b of document.querySelectorAll(".onglets button")) b.onclick = () => {
     memo("courrier.onglet", b.dataset.onglet);
     etat.vue.onglet = b.dataset.onglet;
@@ -444,12 +453,14 @@ function nomExp(de) { return (de || "").replace(/<.*>/, "").replace(/"/g, "").tr
 
 function dessinerListe() {
   if (!etat.messages.length) { $("#liste").innerHTML = barre() + `<div class="vide">Aucun message.</div>`; brancherBarre(); return; }
+  const masquer = etat.vue?.processus && !etat.vue.suivi && memo("courrier.masquerRepondus") === "1";
   $("#liste").innerHTML = barre() + etat.messages.map((m, i) => {
+    if (masquer && m.reponse === "repondu") return "";
     const id = identite(m.destinataires);
     const p = m.processus_id && nomProc(m.processus_id);
     const qui = (m.participants?.length ? m.participants.slice(0, 3).join(", ") : nomExp(m.expediteur));
     return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.thread_id ? "sel" : ""}" draggable="true" data-i="${i}">
-      <div class="l1">${m.suivi !== undefined ? `<span class="etoile ${m.suivi ? "oui" : ""}" data-etoile="${i}" title="Suivre">${m.suivi ? "★" : "☆"}</span>` : ""}<span class="de">${m.important ? `<span class="imp" title="Important">▶</span>` : ""}${esc(qui)}${m.nb > 1 ? `<span class="nbfil">${m.nb}</span>` : ""}</span>${m.reponse === "repondu" ? `<span class="rep ok" title="Réponse envoyée le ${new Date(m.reponse_date).toLocaleDateString("fr-FR")}">✓ Répondu</span>` : m.reponse === "brouillon" ? `<span class="rep br" title="Un brouillon de réponse attend">Brouillon</span>` : m.reponse === "attente" ? `<span class="rep at" title="Pas encore de réponse">À répondre</span>` : ""}<span class="date">${dateCourte(m.date)}</span></div>
+      <div class="l1">${m.suivi !== undefined ? `<span class="etoile ${m.suivi ? "oui" : ""}" data-etoile="${i}" title="Suivre">${m.suivi ? "★" : "☆"}</span>` : ""}<span class="de">${m.important ? `<span class="imp" title="Important">▶</span>` : ""}${esc(qui)}${m.nb > 1 ? `<span class="nbfil">${m.nb}</span>` : ""}</span>${m.reponse === "repondu" ? (m.repondu_manuel ? `<span class="rep ok cliq" data-marquer="${i}" title="Marqué répondu à la main (cliquer pour annuler)">✓ Répondu</span>` : `<span class="rep ok" title="Réponse envoyée le ${new Date(m.reponse_date).toLocaleDateString("fr-FR")}">✓ Répondu</span>`) : m.reponse === "brouillon" ? `<span class="rep br cliq" data-marquer="${i}" title="Un brouillon de réponse attend (cliquer pour marquer répondu)">Brouillon</span>` : m.reponse === "attente" ? `<span class="rep at cliq" data-marquer="${i}" title="Pas encore de réponse (cliquer pour marquer répondu)">À répondre</span>` : ""}<span class="date">${dateCourte(m.date)}</span></div>
       <div class="obj">${id ? `<span class="etiq" style="background:${id.coul}">${id.nom}</span>` : ""}${p ? `<span class="etiq" style="background:${esc(p.couleur)}">${esc(p.nom)}</span>` : ""}${esc(m.objet || "(sans objet)")}</div>
       <div class="ext">${esc(dec(m.extrait))}</div></div>`;
   }).join("") + (etat.pageToken ? `<div class="plus"><button id="btnplus">Plus de conversations</button></div>` : "");
@@ -463,6 +474,17 @@ function dessinerListe() {
     const m = etat.messages[e.dataset.etoile];
     m.suivi = !m.suivi; dessinerListe();
     api("suivre", { compte: m.compte, thread_id: m.thread_id, oui: m.suivi }).catch((er) => toast(er.message));
+  };
+  for (const e of document.querySelectorAll("[data-marquer]")) e.onclick = async (ev) => {
+    ev.stopPropagation();
+    const m = etat.messages[e.dataset.marquer];
+    const oui = !m.repondu_manuel;
+    const avant = { reponse: m.reponse, repondu_manuel: m.repondu_manuel };
+    m.repondu_manuel = oui ? new Date().toISOString() : null;
+    m.reponse = oui ? "repondu" : (m.reponse_auto ?? "attente");
+    dessinerListe();
+    try { await api("marquer_repondu", { id: m.id, oui }); toast(oui ? "Marqué répondu" : "Marque retirée"); }
+    catch (er) { Object.assign(m, avant); dessinerListe(); toast(er.message); }
   };
   if ($("#btnplus")) $("#btnplus").onclick = plus;
   brancherBarre();
