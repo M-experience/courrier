@@ -438,10 +438,22 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     };
   },
 
+  // Messages d'une rubrique, avec l'état de la réponse : répondu (envoi après le message), brouillon en attente, ou rien.
   async processus_messages(b) {
     const { data } = await db.from("messages").select("*")
       .eq("processus_id", b.processus_id).order("date_reception", { ascending: false }).limit(100);
-    return { messages: (data ?? []).map((m) => ({ ...m, date: m.date_reception, non_lu: false })) };
+    const msgs = data ?? [];
+    const etats = await parLots(msgs, 8, async (m) => {
+      try {
+        const t = await google(m.compte_email, `${GM}/threads/${m.thread_id}?format=minimal`);
+        const apres = (t.messages ?? []).filter((x: any) => Number(x.internalDate) > new Date(m.date_reception).getTime());
+        const envoi = apres.filter((x: any) => (x.labelIds ?? []).includes("SENT")).pop();
+        if (envoi) return { reponse: "repondu", reponse_date: new Date(Number(envoi.internalDate)).toISOString() };
+        if ((t.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("DRAFT"))) return { reponse: "brouillon" };
+        return { reponse: "attente" };
+      } catch { return { reponse: null }; }
+    });
+    return { messages: msgs.map((m, i) => ({ ...m, ...etats[i], compte: m.compte_email, date: m.date_reception, non_lu: false })) };
   },
 
   async message(b) {
