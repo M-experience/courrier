@@ -53,6 +53,9 @@
   .pj { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   .pj span { border: 1px solid var(--ligne); border-radius: 8px; padding: 3px 8px; font-size: 12.5px; }
   .vide { color: var(--doux); padding: 30px; text-align: center; }
+  #alerte-comptes { background: #fdecea; color: #a8321f; border-bottom: 1px solid #f3c2bb; padding: 8px 16px; font-size: 13.5px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #alerte-comptes[hidden] { display: none; }
+  .bt-reco { background: #a8321f; color: #fff; border-color: #a8321f; }
   #accueil { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #23221f; color: #fff; padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.vu { opacity: .92; }
@@ -178,6 +181,8 @@
   <button id="sortie" hidden>Déconnexion</button>
 </header>
 
+<div id="alerte-comptes" hidden></div>
+
 <div id="accueil">
   <p>Connectez votre compte Gmail pour commencer.</p>
   <button class="principal" id="connexion">Se connecter avec Google</button>
@@ -245,6 +250,15 @@ async function api(action, corps = {}) {
   return d;
 }
 
+// Reconnexion d'un compte dont l'accès Google a expiré (invalid_grant).
+function reconnecter(email) { connecter(`&session=${encodeURIComponent(etat.session)}&compte=${encodeURIComponent(email)}`); }
+document.addEventListener("click", (ev) => { const b = ev.target.closest("[data-reconnecter]"); if (b) reconnecter(b.dataset.reconnecter); });
+function htmlErreur(msg) {
+  const m = String(msg).match(/(?:Rafraîchissement refusé pour|Compte) (\S+@\S+?)(?: :| à reconnecter)/);
+  if (m && /invalid_grant|reconnecter/.test(msg)) return `<div class="vide">L'accès Google a expiré pour <b>${esc(m[1])}</b>.<br><br><button class="bt-reco" data-reconnecter="${esc(m[1])}">Reconnecter ce compte</button></div>`;
+  return `<div class="vide">${esc(msg)}</div>`;
+}
+
 function connecter(extra = "") {
   location.href = `${API}/oauth-start?retour=${encodeURIComponent(RETOUR)}${extra}`;
 }
@@ -279,6 +293,12 @@ async function demarrer() {
   $("#ajout").hidden = $("#sortie").hidden = $("#recherche").hidden = false;
   chargerFichiers();
   $("#qui").textContent = etat.moi.comptes.filter((c) => c.role !== "drive").map((c) => c.email).join(" · ");
+  const expires = etat.moi.comptes.filter((c) => c.a_reconnecter);
+  if (expires.length) {
+    $("#alerte-comptes").innerHTML = `<span>L'accès Google a expiré pour ${expires.map((c) => `<b>${esc(c.email)}</b>`).join(", ")} : le tri automatique et le suivi sont à l'arrêt pour ${expires.length > 1 ? "ces comptes" : "ce compte"}.</span>`
+      + expires.map((c) => `<button class="bt-reco" data-reconnecter="${esc(c.email)}">Reconnecter ${esc(c.email)}</button>`).join("");
+    $("#alerte-comptes").hidden = false;
+  }
   dessinerNav();
   const principal = etat.moi.comptes.find((c) => c.role === "principal") || etat.moi.comptes[0];
   ouvrirDossier(principal.email, "INBOX");
@@ -384,7 +404,7 @@ async function chargerListe() {
     etat.messages = d.messages.map((m) => ({ ...m, compte: etat.vue.boite }));
     etat.pageToken = d.pageToken;
     dessinerListe();
-  } catch (e) { $("#liste").innerHTML = barre() + `<div class="vide">${esc(e.message)}</div>`; brancherBarre(); }
+  } catch (e) { $("#liste").innerHTML = barre() + htmlErreur(e.message); brancherBarre(); }
 }
 
 async function plus() {
@@ -587,7 +607,7 @@ async function lire(m, depuisTableau = false) {
     for (const b of zone.querySelectorAll("[data-rep]")) b.onclick = (ev) => { ev.stopPropagation(); ouvrirReponse(m, d.messages[b.dataset.rep], false); };
     for (const b of zone.querySelectorAll("[data-reptous]")) b.onclick = () => ouvrirReponse(m, d.messages[b.dataset.reptous], true);
     if (m.non_lu) { api("fil_lu", { compte: m.compte, thread_id: m.thread_id }).catch(() => {}); m.non_lu = false; dessinerListe(); }
-  } catch (e) { zone.innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+  } catch (e) { zone.innerHTML = htmlErreur(e.message); }
 }
 
 // ---------- Réponse rédigée dans Courrier ----------
@@ -670,7 +690,7 @@ async function ouvrirSuivi(flux, processusId) {
     const d = await api("suivi_liste", { flux });
     etat.fils = d.fils;
     dessinerTableau();
-  } catch (e) { $("#liste").innerHTML = `<div class="vide">${esc(e.message)}</div>`; }
+  } catch (e) { $("#liste").innerHTML = htmlErreur(e.message); }
 }
 
 function fermerLectureKanban() {

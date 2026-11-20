@@ -1,4 +1,4 @@
-import { cors, db, dropbox, google, json, parLots } from "../_shared/commun.ts";
+import { cors, db, dropbox, google, jetonAcces, json, parLots } from "../_shared/commun.ts";
 
 const GM = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -115,7 +115,12 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const { data: fils } = await db.from("suivi_fils").select("flux, etat, etat_manuel");
     const suivis = (flux ?? []).map((f) => ({ ...f,
       a_traiter: (fils ?? []).filter((x) => x.flux === f.id && (x.etat_manuel ?? x.etat) === "a_traiter").length }));
-    return { session: s.email, comptes, processus, compteurs: nb, signatures, dropbox: dropbox_comptes ?? [], suivis };
+    // Comptes dont l'accès Google a expiré (jeton de rafraîchissement refusé) : à reconnecter.
+    const etatComptes = await Promise.all((comptes ?? []).map(async (c) => {
+      try { await jetonAcces(c.email); return { ...c, a_reconnecter: false }; }
+      catch (e) { return { ...c, a_reconnecter: /invalid_grant|reconnecter/.test(String((e as Error).message)) }; }
+    }));
+    return { session: s.email, comptes: etatComptes, processus, compteurs: nb, signatures, dropbox: dropbox_comptes ?? [], suivis };
   },
 
   // Liste par conversations, comme la boîte de réception Gmail.
