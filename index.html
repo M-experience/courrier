@@ -524,7 +524,7 @@ async function lire(m, depuisTableau = false) {
       `<option value="${p.id}" ${p.id === m.processus_id ? "selected" : ""}>${esc(p.casquette)} / ${esc(p.nom)}</option>`).join("");
     zone.innerHTML = `
       <h2>${esc(d.messages[0]?.objet || "(sans objet)")}</h2>
-      <div class="barre"><select id="classer">${opts}</select>
+      <div class="barre"><select id="classer">${opts}</select>${m.processus_id ? `<button id="b-retirer" title="Mal classé : retirer ce mail de la rubrique">✕ Retirer de la rubrique</button>` : ""}
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a>
         <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a>
         <button id="b-repondre">↩ Répondre</button><button id="b-tous">↩ Répondre à tous</button>${d.messages.length > 1 ? `<button id="b-deplier">Tout déplier</button>` : ""}</div>
@@ -572,6 +572,7 @@ async function lire(m, depuisTableau = false) {
       ev.target.textContent = tout ? "Tout replier" : "Tout déplier";
     };
     $("#classer").onchange = (ev) => ev.target.value && classer(m, ev.target.value);
+    if ($("#b-retirer")) $("#b-retirer").onclick = () => retirer(m, d.messages.some((x) => x.brouillon));
     for (const b of zone.querySelectorAll("[data-ranger]")) b.onclick = () => {
       const [i, k] = b.dataset.ranger.split(":").map(Number);
       ouvrirClasseur(m.compte, d.messages[i], d.messages[i].pieces_jointes[k]);
@@ -859,6 +860,19 @@ async function rangerIci(compteDrive, dossierId, dossierNom) {
     fermerClasseur();
     toast(`Rangé dans « ${dossierNom} »`);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = "Ranger ici"; }
+}
+
+async function retirer(m, aBrouillon) {
+  const p = nomProc(m.processus_id)?.nom ?? "la rubrique";
+  const exp = nomExp(m.expediteur);
+  if (!confirm(`Retirer ce mail de « ${p} » ?\n\n- il quitte la rubrique et son fichier de suivi\n- ${exp} ne sera plus classé ici à l'avenir${aBrouillon ? "\n- le brouillon de réponse de cette conversation sera supprimé" : ""}`)) return;
+  try {
+    const r = await api("retirer", { id: m.id, thread_id: m.thread_id, supprimer_brouillons: aBrouillon, exclure_expediteur: true });
+    etat.messages = etat.messages.filter((x) => x.thread_id !== m.thread_id);
+    etat.moi = await api("moi");
+    dessinerNav(); dessinerListe(); viderLecture();
+    toast(r.fait.join(" ; "));
+  } catch (e) { toast(e.message); }
 }
 
 async function classer(m, processus_id) {

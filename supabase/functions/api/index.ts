@@ -463,6 +463,53 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
   },
 
   // Marque (ou démarque) un message comme répondu, à la main.
+  // Retire un mail mal classé de sa rubrique : déclassement, retrait du libellé de la règle,
+  // suppression des brouillons automatiques du fil (confirmée par l'utilisateur), expéditeur écarté
+  // de la règle à l'avenir, puis reconstruction du fichier de suivi.
+  async retirer(b) {
+    let { data: m } = await db.from("messages").select("*").eq("id", b.id).maybeSingle();
+    if (!m && b.thread_id) ({ data: m } = await db.from("messages").select("*").eq("thread_id", b.thread_id).not("processus_id", "is", null).limit(1).maybeSingle());
+    if (!m) throw new Error("Message introuvable.");
+    const compte = m.compte_email;
+    const fait: string[] = [];
+    const { data: regle } = m.traite_par ? await db.from("regles").select("*").eq("id", m.traite_par).maybeSingle() : { data: null };
+    await db.from("messages").update({ processus_id: null, statut: "retire", maj_at: new Date().toISOString() }).eq("thread_id", m.thread_id);
+    fait.push("retiré de la rubrique");
+    const lib = (regle?.actions ?? []).find((a: any) => a.type === "libelle")?.nom;
+    if (lib) {
+      const labels = await google(compte, `${GM}/labels`);
+      const l = (labels.labels ?? []).find((x: any) => x.name === lib);
+      if (l) {
+        await google(compte, `${GM}/threads/${m.thread_id}/modify`, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ removeLabelIds: [l.id] }) });
+        fait.push(`libellé « ${lib} » retiré`);
+      }
+    }
+    if (b.supprimer_brouillons) {
+      const d = await google(compte, `${GM}/drafts?maxResults=200`);
+      for (const x of d.drafts ?? []) if (x.message?.threadId === m.thread_id) {
+        await google(compte, `${GM}/drafts/${x.id}`, { method: "DELETE" });
+        fait.push("brouillon supprimé");
+      }
+    }
+    const email = (String(m.expediteur).match(/<([^>]+)>/)?.[1] ?? m.expediteur).trim().toLowerCase();
+    if (regle && b.exclure_expediteur && email) {
+      const c = regle.conditions ?? {};
+      const liste = Array.from(new Set([...(c.exclure_expediteurs ?? []), email]));
+      await db.from("regles").update({ conditions: { ...c, exclure_expediteurs: liste } }).eq("id", regle.id);
+      fait.push(`${email} écarté de la règle`);
+    }
+    await db.from("journal").insert({ type: "retrait", message_id: m.id, details: { regle: regle?.nom, actions: fait } });
+    if (regle && (regle.actions ?? []).some((a: any) => a.type === "sheet")) {
+      const { data: cle } = await db.from("parametres").select("valeur").eq("cle", "cle_cron").maybeSingle();
+      const url = `${Deno.env.get("SUPABASE_URL")}/functions/v1/traiter?reconstruire=1&regle=${encodeURIComponent(regle.nom)}`;
+      // @ts-ignore EdgeRuntime est fourni par Supabase
+      EdgeRuntime.waitUntil(fetch(url, { headers: { "x-cle": cle?.valeur ?? "" } }));
+      fait.push("fichier de suivi en cours de mise à jour");
+    }
+    return { ok: true, fait };
+  },
+
   async marquer_repondu(b) {
     await db.from("messages").update({ repondu_manuel: b.oui ? new Date().toISOString() : null }).eq("id", b.id);
     return { ok: true };

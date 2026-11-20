@@ -293,7 +293,7 @@ async function reconstruire(compte: string, r: any) {
   const action = (r.actions ?? []).find((x: any) => x.type === "sheet");
   if (!action) return 0;
   const sid = await fichierSheet(compte, action.fichier, action.dossier, action.lignes);
-  const { data: msgs } = await db.from("messages").select("id").eq("traite_par", r.id).order("date_reception");
+  const { data: msgs } = await db.from("messages").select("id").eq("traite_par", r.id).not("processus_id", "is", null).order("date_reception");
   const parEmail = new Map<string, { ligne: any[]; n: number; dates: string[] }>();
   for (const x of msgs ?? []) {
     const m = await google(compte, `${GM}/messages/${x.id}?format=full`);
@@ -410,6 +410,9 @@ Deno.serve(async (req) => {
       if (!motCle || !(c.contexte ?? CONTEXTE).some((k: string) => t.includes(norm(k)))) continue;
       if (!(c.demande ? new RegExp(c.demande) : DEMANDE).test(t)) continue;
       if (c.exclure && new RegExp(c.exclure).test(t)) continue;
+      // Expéditeurs retirés à la main de cette rubrique (bouton « Retirer » de Courrier).
+      const adrDe = (entete(h, "From").match(/<([^>]+)>/)?.[1] ?? entete(h, "From")).trim().toLowerCase();
+      if ((c.exclure_expediteurs ?? []).includes(adrDe)) continue;
 
       const de = entete(h, "From");
       const nom = de.replace(/<.*>/, "").replace(/"/g, "").trim();
