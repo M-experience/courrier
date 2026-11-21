@@ -387,6 +387,13 @@ Deno.serve(async (req) => {
     if (!ids.length) continue;
     const { data: deja } = await db.from("messages").select("id").in("id", ids).not("traite_par", "is", null);
     const vus = new Set((deja ?? []).map((x) => x.id));
+    // Messages déjà examinés par cette règle (et écartés) : on ne les relit pas, pour ménager le quota Gmail.
+    const { data: exam } = await db.from("examines").select("message_id").eq("regle_id", r.id).in("message_id", ids);
+    for (const x of exam ?? []) vus.add(x.message_id);
+    if (!simulation) {
+      const nouveaux = ids.filter((i) => !vus.has(i)).map((i) => ({ regle_id: r.id, message_id: i }));
+      if (nouveaux.length) await db.from("examines").upsert(nouveaux, { ignoreDuplicates: true });
+    }
 
     for (const id of ids.filter((i) => !vus.has(i))) {
       const m = await google(compte, `${GM}/messages/${id}?format=full`);
@@ -530,6 +537,32 @@ Deno.serve(async (req) => {
         await db.from("journal").insert({ type: "regle", message_id: id, details: { regle: r.nom, mot_cle: motCle, actions: fait } });
       }
       rapport.push({ regle: r.nom, objet, de: nom, mot_cle: motCle, ...a, actions: fait });
+    }
+  }
+  // Apprentissage : un expéditeur classé à la main dans une rubrique y est rangé automatiquement ensuite.
+  if (!seuleRegle && !simulation) {
+    const { data: appris } = await db.from("expediteurs_appris").select("email, processus_id");
+    if (appris?.length) {
+      const carte = new Map(appris.map((x) => [x.email, x.processus_id]));
+      const liste = await google(compte, `${GM}/messages?maxResults=40&q=${encodeURIComponent("in:inbox newer_than:2d -from:me")}`);
+      const ids: string[] = (liste.messages ?? []).map((m: any) => m.id);
+      if (ids.length) {
+        const { data: connus } = await db.from("messages").select("id").in("id", ids);
+        const deja = new Set((connus ?? []).map((x) => x.id));
+        for (const id of ids.filter((i) => !deja.has(i))) {
+          const m = await google(compte, `${GM}/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`);
+          const h = m.payload?.headers ?? [];
+          const adr = (entete(h, "From").match(/<([^>]+)>/)?.[1] ?? entete(h, "From")).trim().toLowerCase();
+          const pid = carte.get(adr);
+          if (!pid) continue;
+          await db.from("messages").upsert({ id, compte_email: compte, thread_id: m.threadId, expediteur: entete(h, "From"),
+            destinataires: entete(h, "To"), objet: entete(h, "Subject"), extrait: m.snippet,
+            date_reception: new Date(Number(m.internalDate)).toISOString(), labels: m.labelIds ?? [],
+            processus_id: pid, statut: "nouveau", maj_at: new Date().toISOString() });
+          await db.from("journal").insert({ type: "classement", message_id: id, details: { processus_id: pid, appris: adr } });
+          rapport.push({ regle: "apprentissage", objet: entete(h, "Subject"), de: adr, actions: ["classé (expéditeur appris)"] });
+        }
+      }
     }
   }
   return json({ traites: rapport.length, rapport });

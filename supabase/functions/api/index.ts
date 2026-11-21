@@ -130,7 +130,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     if (b.pageToken) p.set("pageToken", b.pageToken);
     const r = await google(compte, `${GM}/threads?${p}`);
     const ids: string[] = (r.threads ?? []).map((t: any) => t.id);
-    const fils = await parLots(ids, 8, async (id) => {
+    const fils = await parLots(ids, 4, async (id) => {
       const t = await google(compte,
         `${GM}/threads/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`);
       const msgs = t.messages ?? [];
@@ -284,6 +284,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     if (b.envoyer) {
       const e = await google(b.compte, `${GM}/messages/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadId: r.m.threadId, raw }) });
       await db.from("journal").insert({ type: "envoi", message_id: e.id, details: { reponse_a: b.message_id, depuis: "Courrier" } });
+      await db.from("messages").update({ reponse_verif: null }).eq("thread_id", r.m.threadId);
       return { ok: true, envoye: true };
     }
     await google(b.compte, `${GM}/drafts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: { threadId: r.m.threadId, raw } }) });
@@ -448,15 +449,21 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const { data } = await db.from("messages").select("*")
       .eq("processus_id", b.processus_id).order("date_reception", { ascending: false }).limit(100);
     const msgs = data ?? [];
-    const etats = await parLots(msgs, 8, async (m: any): Promise<any> => {
-      try {
+    const RECENT = Date.now() - 15 * 60000;
+    const etats = await parLots(msgs, 4, async (m: any): Promise<any> => {
+      // État de réponse gardé en cache 15 minutes (ou définitivement s'il est « répondu »), pour ménager le quota Gmail.
+      if (m.reponse && (m.reponse === "repondu" || (m.reponse_verif && new Date(m.reponse_verif).getTime() > RECENT)))
+        return { reponse: m.reponse, reponse_date: m.reponse_date };
+      const r = await (async () => { try {
         const t = await google(m.compte_email, `${GM}/threads/${m.thread_id}?format=minimal`);
         const apres = (t.messages ?? []).filter((x: any) => Number(x.internalDate) > new Date(m.date_reception).getTime());
         const envoi = apres.filter((x: any) => (x.labelIds ?? []).includes("SENT")).pop();
         if (envoi) return { reponse: "repondu", reponse_date: new Date(Number(envoi.internalDate)).toISOString() };
         if ((t.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("DRAFT"))) return { reponse: "brouillon" };
         return { reponse: "attente" };
-      } catch { return { reponse: null }; }
+      } catch { return { reponse: null }; } })();
+      if (r.reponse) await db.from("messages").update({ reponse: r.reponse, reponse_date: r.reponse_date ?? null, reponse_verif: new Date().toISOString() }).eq("id", m.id);
+      return r;
     });
     return { messages: msgs.map((m, i) => ({ ...m, ...etats[i], reponse_auto: etats[i].reponse,
       ...(m.repondu_manuel ? { reponse: "repondu" } : {}), compte: m.compte_email, date: m.date_reception, non_lu: false })) };
@@ -499,6 +506,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       await db.from("regles").update({ conditions: { ...c, exclure_expediteurs: liste } }).eq("id", regle.id);
       fait.push(`${email} écarté de la règle`);
     }
+    if (email) await db.from("expediteurs_appris").delete().eq("email", email);
     await db.from("journal").insert({ type: "retrait", message_id: m.id, details: { regle: regle?.nom, actions: fait } });
     if (regle && (regle.actions ?? []).some((a: any) => a.type === "sheet")) {
       const { data: cle } = await db.from("parametres").select("valeur").eq("cle", "cle_cron").maybeSingle();
@@ -565,7 +573,15 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       message_id: m.id,
       details: { processus_id: b.processus_id, manuel: true },
     });
-    return { ok: true };
+    // Apprentissage : les prochains mails de cet expéditeur iront dans la même rubrique.
+    const adr = (m.expediteur.match(/<([^>]+)>/)?.[1] ?? m.expediteur).trim().toLowerCase();
+    const miennes = ((await google(b.compte, `${GM}/settings/sendAs`)).sendAs ?? []).map((x: any) => String(x.sendAsEmail).toLowerCase());
+    let appris = false;
+    if (adr && !miennes.includes(adr) && b.apprendre !== false) {
+      await db.from("expediteurs_appris").upsert({ email: adr, processus_id: b.processus_id, at: new Date().toISOString() });
+      appris = true;
+    }
+    return { ok: true, appris: appris ? adr : null };
   },
 
   async statut(b) {
