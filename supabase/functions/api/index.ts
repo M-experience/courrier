@@ -426,6 +426,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(b.oui ? { addLabelIds: ["STARRED"] } : { removeLabelIds: ["STARRED"] }),
     });
+    await db.from("messages").update({ suivi: !!b.oui }).eq("thread_id", b.thread_id);
     return { ok: true };
   },
 
@@ -453,16 +454,17 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
     const etats = await parLots(msgs, 4, async (m: any): Promise<any> => {
       // État de réponse gardé en cache 15 minutes (ou définitivement s'il est « répondu »), pour ménager le quota Gmail.
       if (m.reponse && (m.reponse === "repondu" || (m.reponse_verif && new Date(m.reponse_verif).getTime() > RECENT)))
-        return { reponse: m.reponse, reponse_date: m.reponse_date };
+        return { reponse: m.reponse, reponse_date: m.reponse_date, suivi: !!m.suivi };
       const r = await (async () => { try {
         const t = await google(m.compte_email, `${GM}/threads/${m.thread_id}?format=minimal`);
         const apres = (t.messages ?? []).filter((x: any) => Number(x.internalDate) > new Date(m.date_reception).getTime());
         const envoi = apres.filter((x: any) => (x.labelIds ?? []).includes("SENT")).pop();
-        if (envoi) return { reponse: "repondu", reponse_date: new Date(Number(envoi.internalDate)).toISOString() };
-        if ((t.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("DRAFT"))) return { reponse: "brouillon" };
-        return { reponse: "attente" };
+        const suivi = (t.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("STARRED"));
+        if (envoi) return { reponse: "repondu", reponse_date: new Date(Number(envoi.internalDate)).toISOString(), suivi };
+        if ((t.messages ?? []).some((x: any) => (x.labelIds ?? []).includes("DRAFT"))) return { reponse: "brouillon", suivi };
+        return { reponse: "attente", suivi };
       } catch { return { reponse: null }; } })();
-      if (r.reponse) await db.from("messages").update({ reponse: r.reponse, reponse_date: r.reponse_date ?? null, reponse_verif: new Date().toISOString() }).eq("id", m.id);
+      if (r.reponse) await db.from("messages").update({ reponse: r.reponse, reponse_date: (r as any).reponse_date ?? null, suivi: !!(r as any).suivi, reponse_verif: new Date().toISOString() }).eq("id", m.id);
       return r;
     });
     return { messages: msgs.map((m, i) => ({ ...m, ...etats[i], reponse_auto: etats[i].reponse,
@@ -566,6 +568,7 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
       labels: m.labels,
       processus_id: b.processus_id,
       statut: b.statut ?? "nouveau",
+      classe_par: "manuel",
       maj_at: new Date().toISOString(),
     });
     await db.from("journal").insert({

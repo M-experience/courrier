@@ -441,7 +441,9 @@ function barre() {
   const v = etat.vue;
   if (v?.processus && !v.suivi) {
     const n = etat.messages.filter((m) => m.reponse === "repondu").length;
-    return `<div class="filtres"><button id="masquer-rep" class="${memo("courrier.masquerRepondus") === "1" ? "actif" : ""}" title="Masquer ou afficher les mails déjà répondus">${memo("courrier.masquerRepondus") === "1" ? `Afficher les répondus (${n})` : `Masquer les répondus (${n})`}</button></div>`;
+    const ns = etat.messages.filter((m) => m.suivi).length;
+    return `<div class="filtres"><button id="masquer-rep" class="${memo("courrier.masquerRepondus") === "1" ? "actif" : ""}" title="Masquer ou afficher les mails déjà répondus">${memo("courrier.masquerRepondus") === "1" ? `Afficher les répondus (${n})` : `Masquer les répondus (${n})`}</button>`
+      + `<button id="seuls-suivis" class="${memo("courrier.seulsSuivis") === "1" ? "actif" : ""}" title="N'afficher que les mails suivis (étoilés)">★ Suivis seulement (${ns})</button></div>`;
   }
   if (!v?.boite || v.dossier !== "INBOX" || v.recherche) return "";
   return `<div class="onglets">${ONGLETS.map(([nom, cat, coul]) => {
@@ -452,6 +454,9 @@ function barre() {
 }
 
 function brancherBarre() {
+  if ($("#seuls-suivis")) $("#seuls-suivis").onclick = () => {
+    memo("courrier.seulsSuivis", memo("courrier.seulsSuivis") === "1" ? "0" : "1"); dessinerListe();
+  };
   if ($("#masquer-rep")) $("#masquer-rep").onclick = () => {
     memo("courrier.masquerRepondus", memo("courrier.masquerRepondus") === "1" ? "0" : "1"); dessinerListe();
   };
@@ -474,11 +479,36 @@ function dateCourte(iso) {
 
 function nomExp(de) { return (de || "").replace(/<.*>/, "").replace(/"/g, "").trim() || de; }
 
+// Filtres des rubriques (répondus masqués, suivis seulement).
+function visible(m) {
+  const rub = etat.vue?.processus && !etat.vue.suivi;
+  if (rub && memo("courrier.masquerRepondus") === "1" && m.reponse === "repondu") return false;
+  if (rub && memo("courrier.seulsSuivis") === "1" && !m.suivi) return false;
+  return true;
+}
+
+// Passage au mail suivant / précédent (flèches du clavier ou boutons de la lecture).
+function voisin(sens) {
+  const l = etat.messages.filter(visible);
+  if (!l.length) return;
+  const i = l.findIndex((m) => m.thread_id === etat.sel);
+  const m = l[i < 0 ? 0 : Math.min(Math.max(i + sens, 0), l.length - 1)];
+  if (!m || (i >= 0 && m.thread_id === etat.sel)) return;
+  lire(m);
+  const k = etat.messages.indexOf(m);
+  document.querySelector(`.msg[data-i="${k}"]`)?.scrollIntoView({ block: "nearest" });
+}
+document.addEventListener("keydown", (ev) => {
+  if (ev.target.closest?.("input, textarea, select, [contenteditable]") || $("#classeur") || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if ($("#app").classList.contains("kanban")) return;
+  if (ev.key === "ArrowDown" || ev.key === "j") { ev.preventDefault(); voisin(1); }
+  else if (ev.key === "ArrowUp" || ev.key === "k") { ev.preventDefault(); voisin(-1); }
+});
+
 function dessinerListe() {
   if (!etat.messages.length) { $("#liste").innerHTML = barre() + `<div class="vide">Aucun message.</div>`; brancherBarre(); return; }
-  const masquer = etat.vue?.processus && !etat.vue.suivi && memo("courrier.masquerRepondus") === "1";
   $("#liste").innerHTML = barre() + etat.messages.map((m, i) => {
-    if (masquer && m.reponse === "repondu") return "";
+    if (!visible(m)) return "";
     const id = identite(m.destinataires);
     const p = m.processus_id && nomProc(m.processus_id);
     const qui = (m.participants?.length ? m.participants.slice(0, 3).join(", ") : nomExp(m.expediteur));
@@ -530,6 +560,7 @@ async function lire(m, depuisTableau = false) {
       <div class="barre"><select id="classer">${opts}</select>${m.processus_id ? `<button id="b-retirer" title="Mal classé : retirer ce mail de la rubrique">✕ Retirer de la rubrique</button>` : ""}
         <a href="https://mail.google.com/mail/?authuser=${encodeURIComponent(m.compte)}#all/${d.thread_id}" target="_blank" rel="noopener"><button>Ouvrir dans Gmail</button></a>
         <a href="https://links.mimestream.com/g/${encodeURIComponent(m.compte)}/m/${(d.messages.filter((x) => !x.brouillon).pop() ?? d.messages[0]).id}" target="_blank" rel="noopener"><button>Ouvrir dans Mimestream</button></a>
+        ${depuisTableau ? "" : `<button id="b-prec" title="Mail précédent (flèche ↑)">↑</button><button id="b-suiv" title="Mail suivant (flèche ↓)">↓</button>`}
         <button id="b-repondre">↩ Répondre</button><button id="b-tous">↩ Répondre à tous</button>${d.messages.length > 1 ? `<button id="b-deplier">Tout déplier</button>` : ""}</div>
       ${d.messages.map((x, i) => `
         <div class="carte${x.brouillon ? " brouillon" : ""}" data-c="${i}">
@@ -606,6 +637,7 @@ async function lire(m, depuisTableau = false) {
       zone.querySelector(".fermer-l").onclick = fermerLectureKanban;
     }
     const aRepondre = d.messages.filter((x) => !x.brouillon).pop();
+    if ($("#b-prec")) { $("#b-prec").onclick = () => voisin(-1); $("#b-suiv").onclick = () => voisin(1); }
     $("#b-repondre").onclick = () => ouvrirReponse(m, aRepondre, false);
     $("#b-tous").onclick = () => ouvrirReponse(m, aRepondre, true);
     for (const b of zone.querySelectorAll("[data-rep]")) b.onclick = (ev) => { ev.stopPropagation(); ouvrirReponse(m, d.messages[b.dataset.rep], false); };

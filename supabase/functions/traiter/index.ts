@@ -444,7 +444,7 @@ Deno.serve(async (req) => {
             await db.from("messages").upsert({
               id, compte_email: compte, thread_id: m.threadId, expediteur: de, destinataires: entete(h, "To"),
               objet, extrait: m.snippet, date_reception: date.toISOString(), labels: m.labelIds ?? [],
-              processus_id: r.processus_id, statut: "nouveau", traite_par: r.id, maj_at: new Date().toISOString(),
+              processus_id: r.processus_id, statut: "nouveau", traite_par: r.id, classe_par: "regle", maj_at: new Date().toISOString(),
             });
             fait.push("classé");
           } else if (action.type === "libelle") {
@@ -558,12 +558,67 @@ Deno.serve(async (req) => {
           await db.from("messages").upsert({ id, compte_email: compte, thread_id: m.threadId, expediteur: entete(h, "From"),
             destinataires: entete(h, "To"), objet: entete(h, "Subject"), extrait: m.snippet,
             date_reception: new Date(Number(m.internalDate)).toISOString(), labels: m.labelIds ?? [],
-            processus_id: pid, statut: "nouveau", maj_at: new Date().toISOString() });
+            processus_id: pid, statut: "nouveau", classe_par: "appris", maj_at: new Date().toISOString() });
           await db.from("journal").insert({ type: "classement", message_id: id, details: { processus_id: pid, appris: adr } });
           rapport.push({ regle: "apprentissage", objet: entete(h, "Subject"), de: adr, actions: ["classé (expéditeur appris)"] });
         }
       }
     }
   }
+  if (!seuleRegle && !simulation) rapport.push(...await apprentissageClaude(compte));
   return json({ traites: rapport.length, rapport });
 });
+
+// Apprentissage par Claude : les mails classés à la main servent d'exemples ; Claude range les nouveaux mails
+// de la boîte de réception dans la rubrique la plus proche, seulement s'il est sûr de lui.
+async function apprentissageClaude(compte: string) {
+  const fait: any[] = [];
+  const CLE = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+  if (!CLE) return fait;
+  const { data: ex } = await db.from("messages").select("processus_id, expediteur, objet, extrait")
+    .eq("classe_par", "manuel").not("processus_id", "is", null).order("maj_at", { ascending: false }).limit(300);
+  const parProc = new Map<string, any[]>();
+  for (const e of ex ?? []) { const l = parProc.get(e.processus_id) ?? []; if (l.length < 6) l.push(e); parProc.set(e.processus_id, l); }
+  const candidats = [...parProc.entries()].filter(([, l]) => l.length >= 2);
+  if (!candidats.length) return fait;
+  const { data: procs } = await db.from("processus").select("id, nom, casquette").in("id", candidats.map(([id]) => id));
+  const noms = new Map((procs ?? []).map((p) => [p.id, `${p.casquette} / ${p.nom}`]));
+  const liste = await google(compte, `${GM}/messages?maxResults=30&q=${encodeURIComponent("in:inbox newer_than:1d -from:me -category:promotions -category:social -category:forums")}`);
+  const ids: string[] = (liste.messages ?? []).map((m: any) => m.id);
+  if (!ids.length) return fait;
+  const [{ data: connus }, { data: vus }] = await Promise.all([
+    db.from("messages").select("id").in("id", ids), db.from("claude_vus").select("message_id").in("message_id", ids)]);
+  const ecartes = new Set([...(connus ?? []).map((x) => x.id), ...(vus ?? []).map((x) => x.message_id)]);
+  const exemples = candidats.map(([id, l], k) => `Rubrique ${k + 1} : ${noms.get(id)}\n` +
+    l.map((e) => `  - De : ${e.expediteur} | Objet : ${e.objet} | ${String(e.extrait ?? "").slice(0, 160)}`).join("\n")).join("\n\n");
+  for (const id of ids.filter((i) => !ecartes.has(i)).slice(0, 12)) {
+    const m = await google(compte, `${GM}/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=List-Id`);
+    const h = m.payload?.headers ?? [];
+    let res: any = null;
+    if (!entete(h, "List-Id") && !/no-?reply|newsletter|notification|mailer/i.test(entete(h, "From"))) {
+      try {
+        const r = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "x-api-key": CLE, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 1500,
+            system: "Tu ranges des e-mails dans des rubriques à partir d'exemples classés par leur destinataire. Réponds uniquement par un objet JSON.",
+            messages: [{ role: "user", content: `Exemples de mails déjà rangés :\n\n${exemples}\n\nNouveau mail :\nDe : ${entete(h, "From")}\nObjet : ${entete(h, "Subject")}\nExtrait : ${m.snippet}\n\nDans quelle rubrique ce mail doit-il aller ? Ne choisis une rubrique que si le mail relève clairement du même type d'échange que ses exemples. Renvoie {"rubrique": numéro ou null, "confiance": nombre entre 0 et 1, "raison": "quelques mots"}.` }] }),
+        });
+        const d = await r.json();
+        const txt = (d.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+        res = JSON.parse(txt.slice(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
+      } catch (e) { console.error("apprentissage", (e as Error).message); }
+    }
+    await db.from("claude_vus").upsert({ message_id: id, resultat: res });
+    const k = Number(res?.rubrique);
+    if (!res || !k || !candidats[k - 1] || Number(res.confiance) < 0.8) continue;
+    const pid = candidats[k - 1][0];
+    await db.from("messages").upsert({ id, compte_email: compte, thread_id: m.threadId, expediteur: entete(h, "From"),
+      destinataires: entete(h, "To"), objet: entete(h, "Subject"), extrait: m.snippet,
+      date_reception: new Date(Number(m.internalDate)).toISOString(), labels: m.labelIds ?? [],
+      processus_id: pid, statut: "nouveau", classe_par: "claude", maj_at: new Date().toISOString() });
+    await db.from("journal").insert({ type: "classement", message_id: id, details: { processus_id: pid, claude: res } });
+    fait.push({ regle: "apprentissage Claude", objet: entete(h, "Subject"), rubrique: noms.get(pid), raison: res.raison, actions: ["classé par Claude"] });
+  }
+  return fait;
+}
