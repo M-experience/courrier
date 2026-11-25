@@ -396,10 +396,10 @@ Deno.serve(async (req) => {
     }
 
     for (const id of ids.filter((i) => !vus.has(i))) {
-      const m = await google(compte, `${GM}/messages/${id}?format=full`);
+      const m = await google(compte, `${GM}/messages/${id}?format=${c.simple ? "metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject" : "full"}`);
       const h = m.payload?.headers ?? [];
       const objet = entete(h, "Subject");
-      const corps = texte(m.payload);
+      const corps = c.simple ? "" : texte(m.payload);
       const t = norm(`${objet}\n${corps}`);
 
       if (c.premier_message_seulement) {
@@ -409,13 +409,14 @@ Deno.serve(async (req) => {
       // Écarte les envois de masse (lettres d'information, notifications), sauf la liste numerique2.0.
       const listId = norm(entete(h, "List-Id") + entete(h, "List-Unsubscribe"));
       const deNorm = norm(entete(h, "From"));
-      if (listId && !listId.includes("numerique2")) continue;
-      if (/no-?reply|newsletter|notification|mailer|zoom\.us|legavote/.test(deNorm)) continue;
+      // Règle « simple » : la requête Gmail suffit (ex. pedago@ecole-edm.fr en copie).
+      if (!c.simple && listId && !listId.includes("numerique2")) continue;
+      if (!c.simple && /no-?reply|newsletter|notification|mailer|zoom\.us|legavote/.test(deNorm)) continue;
       // Mot-clé en mot entier + contexte de candidature + forme de demande personnelle.
       // Contexte, forme de demande et exclusions propres à la règle (sinon ceux des candidatures).
-      const motCle = (c.mots_cles ?? []).find((k: string) => new RegExp(`(^|[^a-z0-9])${norm(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(t));
-      if (!motCle || !(c.contexte ?? CONTEXTE).some((k: string) => t.includes(norm(k)))) continue;
-      if (!(c.demande ? new RegExp(c.demande) : DEMANDE).test(t)) continue;
+      const motCle = c.simple ? "requête Gmail" : (c.mots_cles ?? []).find((k: string) => new RegExp(`(^|[^a-z0-9])${norm(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(t));
+      if (!c.simple && (!motCle || !(c.contexte ?? CONTEXTE).some((k: string) => t.includes(norm(k))))) continue;
+      if (!c.simple && !(c.demande ? new RegExp(c.demande) : DEMANDE).test(t)) continue;
       if (c.exclure && new RegExp(c.exclure).test(t)) continue;
       // Expéditeurs retirés à la main de cette rubrique (bouton « Retirer » de Courrier).
       const adrDe = (entete(h, "From").match(/<([^>]+)>/)?.[1] ?? entete(h, "From")).trim().toLowerCase();
@@ -426,10 +427,10 @@ Deno.serve(async (req) => {
       const date = new Date(Number(m.internalDate));
       const lien = `https://mail.google.com/mail/?authuser=${encodeURIComponent(compte)}#all/${m.threadId}`;
       // Analyse des candidatures (Claude ou heuristiques) seulement pour les règles qui en ont besoin.
-      const sansAnalyse = simulation || c.analyse === false || c.analyse === "phd";
+      const sansAnalyse = simulation || c.simple || c.analyse === false || c.analyse === "phd";
       const { email, np, a, parClaude, dejaInscrit, horsUE } = sansAnalyse
         ? { email: (de.match(/<([^>]+)>/)?.[1] ?? de).trim().toLowerCase(), np: nomPrenom(nom),
-            a: (c.analyse === false || c.analyse === "phd") ? { formation: "", profil: "", resume: "" } : analyserCandidat(corps, objet),
+            a: (c.simple || c.analyse === false || c.analyse === "phd") ? { formation: "", profil: "", resume: "" } : analyserCandidat(corps, objet),
             parClaude: false, dejaInscrit: false, horsUE: false }
         : await analyser(de, objet, corps);
       const resPhd = !simulation && c.analyse === "phd" ? await analysePhd(de, objet, corps) : null;
