@@ -418,6 +418,8 @@ Deno.serve(async (req) => {
       if (!c.simple && (!motCle || !(c.contexte ?? CONTEXTE).some((k: string) => t.includes(norm(k))))) continue;
       if (!c.simple && !(c.demande ? new RegExp(c.demande) : DEMANDE).test(t)) continue;
       if (c.exclure && new RegExp(c.exclure).test(t)) continue;
+      // Destinataire principal exigé (champ « À », pas seulement en copie).
+      if (c.to_regex && !new RegExp(c.to_regex, "i").test(entete(h, "To"))) continue;
       // Expéditeurs retirés à la main de cette rubrique (bouton « Retirer » de Courrier).
       const adrDe = (entete(h, "From").match(/<([^>]+)>/)?.[1] ?? entete(h, "From")).trim().toLowerCase();
       if ((c.exclure_expediteurs ?? []).includes(adrDe)) continue;
