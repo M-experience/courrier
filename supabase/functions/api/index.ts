@@ -448,8 +448,10 @@ const actions: Record<string, (b: Corps, s: { email: string }) => Promise<unknow
   // Messages d'une rubrique, avec l'état de la réponse : répondu (envoi après le message), brouillon en attente, ou rien.
   async processus_messages(b) {
     const { data } = await db.from("messages").select("*")
-      .eq("processus_id", b.processus_id).order("date_reception", { ascending: false }).limit(100);
-    const msgs = data ?? [];
+      .eq("processus_id", b.processus_id).order("date_reception", { ascending: false }).limit(400);
+    // Un seul élément par fil (le message le plus récent).
+    const vusFils = new Set<string>();
+    const msgs = (data ?? []).filter((m: any) => !vusFils.has(m.thread_id) && vusFils.add(m.thread_id)).slice(0, 100);
     const RECENT = Date.now() - 15 * 60000;
     const etats = await parLots(msgs, 4, async (m: any): Promise<any> => {
       // État de réponse gardé en cache 15 minutes (ou définitivement s'il est « répondu »), pour ménager le quota Gmail.
