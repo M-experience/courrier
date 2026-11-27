@@ -123,6 +123,9 @@
   .tableau .entete-t h3 { margin: 0; font-size: 15px; flex: 1; }
   .tableau .entete-t input { width: 200px; padding: 5px 8px; border: 1px solid var(--ligne); border-radius: 8px; font: inherit; }
   .tableau .colonnes { flex: 1 1 58%; }
+  .bascule { display: inline-flex; border: 1px solid var(--ligne); border-radius: 8px; overflow: hidden; }
+  .bascule button { border: 0; background: transparent; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  .bascule button.actif { background: var(--accent, #2f6fb3); color: #fff; }
   .liste-t { flex: 1 1 42%; min-height: 160px; overflow: auto; border-top: 2px solid var(--ligne); }
   .liste-t h4 { margin: 0; padding: 8px 14px; font-size: 13px; position: sticky; top: 0; background: var(--panneau, #fff); border-bottom: 1px solid var(--ligne); z-index: 1; }
   .liste-t h4 span { font-weight: normal; color: #8a8578; margin-left: 6px; }
@@ -441,8 +444,23 @@ async function ouvrirProcessus(id) {
   if (etat.messages.length) lire(etat.messages[0]); else viderLecture("Aucun message dans cette rubrique.");
 }
 
+function basculeVue(mode) {
+  return `<span class="bascule"><button data-vue="tableau" class="${mode === "tableau" ? "actif" : ""}" title="Vue Kanban">▦ Tableau</button><button data-vue="liste" class="${mode === "liste" ? "actif" : ""}" title="Vue liste avec aperçu à droite">☰ Liste</button></span>`;
+}
+function brancherBascule() {
+  for (const b of document.querySelectorAll(".bascule button")) b.onclick = () => {
+    if (b.dataset.vue === etat.vue.mode) return;
+    memo("courrier.vueSuivi", b.dataset.vue);
+    ouvrirSuivi(etat.vue.suivi, etat.vue.processus);
+  };
+}
+
 function barre() {
   const v = etat.vue;
+  if (v?.suivi && v.mode === "liste") {
+    const s = (etat.moi.suivis ?? []).find((x) => x.id === v.suivi);
+    return `<div class="filtres"><b style="flex:1">${esc(LISTES_SUIVI[v.suivi]?.titre ?? s?.nom ?? "Suivi")}</b>${basculeVue("liste")}</div>`;
+  }
   if (v?.processus && !v.suivi) {
     const n = etat.messages.filter((m) => m.reponse === "repondu").length;
     const ns = etat.messages.filter((m) => m.suivi).length;
@@ -458,6 +476,7 @@ function barre() {
 }
 
 function brancherBarre() {
+  brancherBascule();
   if ($("#seuls-suivis")) $("#seuls-suivis").onclick = () => {
     memo("courrier.seulsSuivis", memo("courrier.seulsSuivis") === "1" ? "0" : "1"); dessinerListe();
   };
@@ -759,8 +778,22 @@ function dessinerListeSuivi() {
 }
 
 async function ouvrirSuivi(flux, processusId) {
-  etat.vue = { suivi: flux, processus: processusId, filtre: "" };
+  const mode = LISTES_SUIVI[flux] && memo("courrier.vueSuivi") === "liste" ? "liste" : "tableau";
+  etat.vue = { suivi: flux, processus: processusId, filtre: "", mode };
   etat.sel = null;
+  if (mode === "liste") {
+    $("#app").classList.remove("kanban", "ouvert");
+    marquerNav();
+    viderLecture("Chargement…");
+    $("#liste").innerHTML = barre() + `<div class="vide">Chargement…</div>`; brancherBarre();
+    await chargerListeSuivi(flux);
+    if (etat.vue.suivi !== flux || etat.vue.mode !== "liste") return;
+    etat.messages = (etat.listeSuivi?.messages ?? []).map((m) => ({ ...m, processus_id: processusId }));
+    etat.pageToken = null;
+    dessinerListe();
+    if (etat.messages.length) lire(etat.messages[0]); else viderLecture("Aucun mail.");
+    return;
+  }
   $("#app").classList.add("kanban");
   $("#app").classList.remove("ouvert");
   marquerNav();
@@ -791,7 +824,7 @@ function dessinerTableau() {
   const visibles = etat.fils.filter((x) => !f || [x.objet, x.personne, x.resume, x.action, x.type].join(" ").toLowerCase().includes(f));
   const limiteClos = Date.now() - 30 * 86400000;
   $("#liste").innerHTML = `<div class="tableau">
-    <div class="entete-t"><h3>${esc(s?.nom ?? "Suivi")}</h3><input type="search" id="filtre-t" placeholder="Filtrer (nom, type…)" value="${esc(v.filtre)}"><button id="maj-t" title="Recharger">↻</button></div>
+    <div class="entete-t"><h3>${esc(s?.nom ?? "Suivi")}</h3><input type="search" id="filtre-t" placeholder="Filtrer (nom, type…)" value="${esc(v.filtre)}"><button id="maj-t" title="Recharger">↻</button>${LISTES_SUIVI[v.suivi] ? basculeVue("tableau") : ""}</div>
     <div class="colonnes">${COLONNES.map(([cle, nom, coul]) => {
       const cartes = visibles.filter((x) => x.etat === cle && (cle !== "clos" || new Date(x.dernier_message_at).getTime() > limiteClos));
       return `<div class="colonne" data-col="${cle}"><h4 style="border-color:${coul}">${esc(nom)}<span>${cartes.length}</span>${cle === "clos" ? `<button id="purger-t" title="Supprimer du tableau les cartes closes de plus de 30 jours">Purger</button>` : ""}</h4><div class="cartes">${cartes.map((x) => {
@@ -811,6 +844,7 @@ function dessinerTableau() {
   let minuterie;
   $("#filtre-t").oninput = (ev) => { clearTimeout(minuterie); minuterie = setTimeout(() => { etat.vue.filtre = ev.target.value; dessinerTableau(); $("#filtre-t").focus(); }, 250); };
   $("#maj-t").onclick = () => ouvrirSuivi(v.suivi, v.processus);
+  brancherBascule();
   $("#purger-t").onclick = async () => {
     const n = etat.fils.filter((x) => x.etat === "clos" && new Date(x.dernier_message_at).getTime() < limiteClos).length;
     if (!n) return toast("Aucune carte close de plus de 30 jours.");
