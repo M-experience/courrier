@@ -122,6 +122,10 @@
   .tableau .entete-t { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--ligne); }
   .tableau .entete-t h3 { margin: 0; font-size: 15px; flex: 1; }
   .tableau .entete-t input { width: 200px; padding: 5px 8px; border: 1px solid var(--ligne); border-radius: 8px; font: inherit; }
+  .tableau .colonnes { flex: 1 1 58%; }
+  .liste-t { flex: 1 1 42%; min-height: 160px; overflow: auto; border-top: 2px solid var(--ligne); }
+  .liste-t h4 { margin: 0; padding: 8px 14px; font-size: 13px; position: sticky; top: 0; background: var(--panneau, #fff); border-bottom: 1px solid var(--ligne); z-index: 1; }
+  .liste-t h4 span { font-weight: normal; color: #8a8578; margin-left: 6px; }
   .colonnes { flex: 1; display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); gap: 10px; padding: 10px; overflow: auto; min-height: 0; background: var(--fond); }
   .colonne { background: #efede8; border-radius: 10px; display: flex; flex-direction: column; min-height: 0; }
   .colonne.cible { outline: 2px dashed var(--accent); outline-offset: -2px; }
@@ -714,6 +718,46 @@ const COLONNES = [
 const COUL_TYPE = { "Déclaration nouveau salarié": "#2f6fb3", "Contrat": "#1f8a8a", "Paie du mois": "#3f8f4f",
   "Demande d'un salarié": "#7a5bb3", "Administratif": "#8a6d3b", "Autre": "#8a8578" };
 
+// Liste classique affichée sous le tableau (tous les mails de ces expéditeurs).
+const LISTES_SUIVI = {
+  "paie-edm": { titre: "Mails de Stéphanie et de Silae", q: "{from:stephanie.ouazana@efficiencepaie.fr from:noreply@silae.fr}" },
+};
+
+async function chargerListeSuivi(flux) {
+  const cfg = LISTES_SUIVI[flux];
+  if (!cfg) return;
+  const zone = $("#liste-t");
+  try {
+    const res = await Promise.all(etat.moi.comptes.filter((c) => !c.a_reconnecter).map((c) =>
+      api("fils", { compte: c.email, q: cfg.q, max: 30 }).then((d) => d.messages.map((m) => ({ ...m, compte: c.email }))).catch(() => [])));
+    etat.listeSuivi = { flux, messages: res.flat().sort((a, b) => b.date.localeCompare(a.date)) };
+    dessinerListeSuivi();
+  } catch (e) { if (zone) zone.innerHTML = htmlErreur(e.message); }
+}
+
+function dessinerListeSuivi() {
+  const zone = $("#liste-t"), cfg = LISTES_SUIVI[etat.vue?.suivi];
+  if (!zone || !cfg) return;
+  const l = etat.listeSuivi?.flux === etat.vue.suivi ? etat.listeSuivi.messages : null;
+  const f = (etat.vue.filtre || "").toLowerCase();
+  const vis = (l ?? []).filter((m) => !f || [m.objet, m.expediteur, m.extrait].join(" ").toLowerCase().includes(f));
+  zone.innerHTML = `<h4>${esc(cfg.titre)}<span>${l ? vis.length : "chargement…"}</span></h4>` + (l ? vis.map((m) => {
+    const qui = m.participants?.length ? m.participants.slice(0, 3).join(", ") : nomExp(m.expediteur);
+    return `<div class="msg ${m.non_lu ? "nonlu" : ""} ${etat.sel === m.thread_id ? "sel" : ""}" data-t="${esc(m.thread_id)}">
+      <div class="l1"><span class="de">${esc(qui)}${m.nb > 1 ? `<span class="nbfil">${m.nb}</span>` : ""}</span><span class="date">${dateCourte(m.date)}</span></div>
+      <div class="obj">${esc(m.objet || "(sans objet)")}</div>
+      <div class="ext">${esc(dec(m.extrait))}</div></div>`;
+  }).join("") || `<div class="vide" style="padding:14px">Aucun mail.</div>` : "");
+  for (const e of zone.querySelectorAll(".msg")) e.onclick = () => {
+    const m = l.find((x) => x.thread_id === e.dataset.t);
+    etat.sel = m.thread_id;
+    for (const o of document.querySelectorAll(".fiche.sel, #liste-t .msg.sel")) o.classList.remove("sel");
+    e.classList.add("sel");
+    $("#app").classList.add("ouvert");
+    lireFil({ compte: m.compte, thread_id: m.thread_id, id: m.id, processus_id: etat.vue.processus });
+  };
+}
+
 async function ouvrirSuivi(flux, processusId) {
   etat.vue = { suivi: flux, processus: processusId, filtre: "" };
   etat.sel = null;
@@ -726,6 +770,7 @@ async function ouvrirSuivi(flux, processusId) {
     const d = await api("suivi_liste", { flux });
     etat.fils = d.fils;
     dessinerTableau();
+    chargerListeSuivi(flux);
   } catch (e) { $("#liste").innerHTML = htmlErreur(e.message); }
 }
 
@@ -761,7 +806,8 @@ function dessinerTableau() {
           <div class="man"><span>${esc(x.dernier_expediteur || "")}${x.manuel ? " · placé à la main" : ""}</span>${cle !== "clos" ? `<button class="clore" title="Marquer comme traité">✓ Clore</button>` : ""}</div>
         </div>`;
       }).join("") || `<div class="vide" style="padding:14px">Rien ici.</div>`}</div></div>`;
-    }).join("")}</div></div>`;
+    }).join("")}</div>${LISTES_SUIVI[v.suivi] ? `<div class="liste-t" id="liste-t"></div>` : ""}</div>`;
+  dessinerListeSuivi();
   let minuterie;
   $("#filtre-t").oninput = (ev) => { clearTimeout(minuterie); minuterie = setTimeout(() => { etat.vue.filtre = ev.target.value; dessinerTableau(); $("#filtre-t").focus(); }, 250); };
   $("#maj-t").onclick = () => ouvrirSuivi(v.suivi, v.processus);
